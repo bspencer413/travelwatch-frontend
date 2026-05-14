@@ -52,7 +52,7 @@ const API_BASE = 'https://cruiseship-watch-backend.onrender.com';
 const TW_BG = 'https://raw.githubusercontent.com/bspencer413/travelwatch-frontend/main/tw-bg.png';
 const TW_LOGIN_BG = 'https://raw.githubusercontent.com/bspencer413/travelwatch-frontend/main/tw-bg.png';
 const BILL_PHOTO = 'https://raw.githubusercontent.com/bspencer413/memorial-watch/main/Bill.jpeg';
-const APP_VERSION = '0.1.2';
+const APP_VERSION = '0.1.3';
 
 // ── TW helpers ────────────────────────────────────────────────────────────────
 
@@ -634,7 +634,7 @@ function App() {
   if (page === 'login') {
     return (
       <div style={{ minHeight: '100dvh', width: '100%', backgroundColor: POSTER_STYLE.backgroundColor, backgroundImage: 'url(' + TW_LOGIN_BG + ')', backgroundSize: POSTER_STYLE.backgroundSize, backgroundPosition: POSTER_STYLE.backgroundPosition, backgroundRepeat: POSTER_STYLE.backgroundRepeat, backgroundAttachment: POSTER_STYLE.backgroundAttachment, display: 'flex', flexDirection: 'column', alignItems: 'stretch', paddingBottom: '4rem', position: 'relative' }}>
-        <div style={{ position: 'fixed', inset: 0, backdropFilter: 'blur(10px)', WebkitBackdropFilter: 'blur(10px)', backgroundColor: 'rgba(10,10,10,0.40)', zIndex: 0 }} />
+        <div style={{ position: 'fixed', inset: 0, backdropFilter: 'blur(5px)', WebkitBackdropFilter: 'blur(5px)', backgroundColor: 'rgba(10,10,10,0.40)', zIndex: 0 }} />
         <div style={{ position: 'relative', zIndex: 10, display: 'flex', flexDirection: 'column', alignItems: 'stretch', flex: '1 1 auto' }}>
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'flex-end', flex: '1 1 auto', minHeight: '50vh', paddingTop: '2rem', paddingBottom: '1.5rem' }}>
           <h1 className="text-teal-300 font-black text-center tracking-tight" style={{ fontSize: isPhone ? '6rem' : '7rem', textShadow: '0 2px 14px rgba(0,0,0,0.95), 0 0 28px rgba(0,0,0,0.85)', marginTop: '1rem', lineHeight: '1' }}>Travel<br />Watch</h1>
@@ -690,7 +690,7 @@ function App() {
             <div className={cardClass} style={{ overflowY: 'auto', maxHeight: 'calc(100dvh - ' + SEARCH_PT + ' - 7rem)', backgroundColor: 'rgba(28,20,16,0.85)' }}>
               <CardPageHeader title="Add a Place" subtitle="Get Travel Alerts Where You Go" />
               <div className="space-y-3">
-                <ClearableInput value={geoQuery} onChange={(e) => { setGeoQuery(e.target.value); setGeoPicked(null); }} onKeyPress={(e) => e.key === 'Enter' && doGeocode()} placeholder="Paris · Cabo San Lucas · Kyoto, Japan" inputClass={iClass} />
+                <ClearableInput value={geoQuery} onChange={(e) => { setGeoQuery(e.target.value); setGeoPicked(null); }} onKeyPress={(e) => e.key === 'Enter' && doGeocode()} placeholder="Paris · Cabo San Lucas · Kyoto" inputClass={iClass} />
                 <button onClick={doGeocode} disabled={geoSearching} className="w-full py-3 bg-teal-600 hover:bg-teal-700 disabled:opacity-60 text-white rounded-lg flex items-center justify-center gap-2 text-xl font-bold">
                   {geoSearching ? 'Searching…' : 'Search'}
                 </button>
@@ -827,7 +827,7 @@ function App() {
         {page === 'alerts' && (
           <div className="space-y-3" style={{ paddingTop: '1rem' }}>
             <div className={cardClass}>
-              <CardPageHeader title="Alerts" subtitle="Latest travel signals on your places" />
+              <CardPageHeader title="Alerts" subtitle="Latest travel alerts on your places" />
               {notifications.length === 0 ? (
                 <div className="text-center py-4">
                   <p className="text-white font-bold text-2xl">No alerts yet</p>
