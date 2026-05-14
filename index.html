@@ -1,0 +1,1010 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#d97706">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="TravelWatch">
+  <title>Travel Watch</title>
+  <meta name="description" content="Travel Watch — Stay informed about travel conditions for destinations you care about. Advisories, outbreaks, and maritime conditions. Anywhere in the world. Free.">
+  <meta name="keywords" content="travel watch, travel advisories, destination alerts, who outbreaks, travel safety">
+  <meta name="robots" content="index, follow">
+  <meta name="author" content="Travel Watch">
+  <link rel="canonical" href="https://travelwatch.app">
+  <meta property="og:title" content="Travel Watch — Watch your trips, places you go">
+  <meta property="og:description" content="Add destinations to your watchlist. Get notified about travel advisories, outbreaks, and maritime conditions.">
+  <meta property="og:url" content="https://travelwatch.app">
+  <meta property="og:type" content="website">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Travel Watch — Watch your trips, places you go">
+  <meta name="twitter:description" content="Add destinations to your watchlist. Get notified about travel conditions.">
+  <link rel="manifest" href="data:application/json;base64,eyJuYW1lIjogIlRyYXZlbCBXYXRjaCIsICJzaG9ydF9uYW1lIjogIlRXIiwgInN0YXJ0X3VybCI6ICIvIiwgImRpc3BsYXkiOiAic3RhbmRhbG9uZSIsICJiYWNrZ3JvdW5kX2NvbG9yIjogIiMwYTBhMGEiLCAidGhlbWVfY29sb3IiOiAiI2Q5NzcwNiJ9">
+  <link rel="apple-touch-icon" href="https://raw.githubusercontent.com/bspencer413/travelwatch-frontend/main/tw-icon.png">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    * { -webkit-tap-highlight-color: transparent; font-family: Georgia, 'Times New Roman', serif; }
+    html, body { height: 100%; overflow-x: hidden; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+    .tap-pulse { animation: pulse 1.8s ease-in-out infinite; }
+    .modal-drawer {
+      position: fixed; bottom: 0; left: 0; right: 0; z-index: 100;
+      background: #1c1410; border-radius: 20px 20px 0 0;
+      border-top: 1px solid #78350f;
+      max-height: 85vh; overflow-y: auto;
+      transform: translateY(0);
+      transition: transform 0.3s ease;
+      padding-bottom: max(1rem, env(safe-area-inset-bottom));
+    }
+    .modal-overlay { position: fixed; inset: 0; z-index: 99; background: rgba(0,0,0,0.6); }
+  </style>
+</head>
+<body style="margin:0;padding:0;">
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect } = React;
+
+const API_BASE = 'https://cruiseship-watch-backend.onrender.com';
+const TW_BG = 'https://raw.githubusercontent.com/bspencer413/travelwatch-frontend/main/tw-bg.png';
+const TW_LOGIN_BG = 'https://raw.githubusercontent.com/bspencer413/travelwatch-frontend/main/tw-bg.png';
+const BILL_PHOTO = 'https://raw.githubusercontent.com/bspencer413/memorial-watch/main/Bill.jpeg';
+const APP_VERSION = '0.1.0';
+
+// ── TW helpers ────────────────────────────────────────────────────────────────
+
+const toTitleCase = (str) => {
+  if (!str) return '';
+  return str.toLowerCase().split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+};
+
+const smartTitleCase = (str) => {
+  if (!str) return '';
+  return toTitleCase(str.trim());
+};
+
+// State Dept advisory level → display style. 1=green safest, 4=red do not travel.
+const advisoryLevelStyle = (level) => {
+  if (level === 4) return { border: '#7f1d1d', headerBg: '#991b1b', cardBg: 'rgba(127,29,29,0.55)', label: 'Level 4: Do Not Travel' };
+  if (level === 3) return { border: '#9a3412', headerBg: '#9a3412', cardBg: 'rgba(124,45,18,0.45)', label: 'Level 3: Reconsider Travel' };
+  if (level === 2) return { border: '#92400e', headerBg: '#92400e', cardBg: 'rgba(120,53,15,0.40)', label: 'Level 2: Exercise Increased Caution' };
+  if (level === 1) return { border: '#166534', headerBg: '#166534', cardBg: 'rgba(20,83,45,0.40)', label: 'Level 1: Exercise Normal Precautions' };
+  return { border: '#52525b', headerBg: '#3f3f46', cardBg: 'rgba(63,63,70,0.35)', label: 'No advisory on file' };
+};
+
+// NOAA marine sea state → display style.
+const seaStateStyle = (state) => {
+  if (state === 'rough')    return { border: '#7f1d1d', headerBg: '#991b1b', cardBg: 'rgba(127,29,29,0.45)', label: 'Rough' };
+  if (state === 'moderate') return { border: '#9a3412', headerBg: '#9a3412', cardBg: 'rgba(124,45,18,0.40)', label: 'Moderate' };
+  if (state === 'calm')     return { border: '#166534', headerBg: '#166534', cardBg: 'rgba(20,83,45,0.35)', label: 'Calm' };
+  return { border: '#52525b', headerBg: '#3f3f46', cardBg: 'rgba(63,63,70,0.30)', label: 'Unknown' };
+};
+
+// Clean HTML out of a State Dept summary (or any HTML-bearing source field).
+const stripHtml = (s) => {
+  if (!s) return '';
+  var tmp = document.createElement('div');
+  tmp.innerHTML = s;
+  return (tmp.textContent || tmp.innerText || '').replace(/\s+/g, ' ').trim();
+};
+
+const truncateWords = (s, maxChars) => {
+  if (!s) return '';
+  if (s.length <= maxChars) return s;
+  var cut = s.substring(0, maxChars);
+  var lastSpace = cut.lastIndexOf(' ');
+  if (lastSpace > maxChars - 50) cut = cut.substring(0, lastSpace);
+  return cut + '…';
+};
+
+const formatRelativeTime = (iso) => {
+  if (!iso) return '';
+  try {
+    const t = new Date(iso.replace(' ', 'T') + (iso.indexOf('Z') === -1 && iso.indexOf('+') === -1 ? 'Z' : ''));
+    const diffMs = Date.now() - t.getTime();
+    const min = Math.floor(diffMs / 60000);
+    if (min < 1) return 'just now';
+    if (min < 60) return min + ' min ago';
+    const hrs = Math.floor(min / 60);
+    if (hrs < 24) return hrs + ' hr ago';
+    const days = Math.floor(hrs / 24);
+    if (days < 30) return days + ' day' + (days === 1 ? '' : 's') + ' ago';
+    return t.toLocaleDateString();
+  } catch (e) { return ''; }
+};
+
+const RADIUS_PRESETS = [25, 50, 100, 250];
+
+// ── Icon components ───────────────────────────────────────────────────────────
+
+const SearchIcon = () => (
+  <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
+);
+
+const HeartIcon = () => (
+  <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z" /></svg>
+);
+
+const InfoIcon = () => (
+  <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+);
+
+const BellIcon = ({ red }) => (
+  <svg className={'w-7 h-7 ' + (red ? 'tap-pulse' : '')} fill={red ? '#dc2626' : 'none'} stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" /></svg>
+);
+
+const PlusIcon = () => (
+  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
+);
+
+const TrashIcon = () => (
+  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+);
+
+const EditIcon = () => (
+  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
+);
+
+const CheckIcon = () => (
+  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
+);
+
+const PinIcon = () => (
+  <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
+);
+
+const EyeIcon = () => (
+  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
+);
+
+const EyeOffIcon = () => (
+  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" /></svg>
+);
+
+const ClearableInput = ({ value, onChange, onBlur, onKeyPress, placeholder, type='text', maxLength, inputClass, numeric }) => (
+  <div className="relative">
+    <input type={type} value={value} onChange={onChange} onBlur={onBlur} onKeyPress={onKeyPress} placeholder={placeholder} maxLength={maxLength} inputMode={numeric ? 'decimal' : undefined} className={inputClass + ' pr-10'} autoCorrect="off" autoCapitalize={numeric ? 'off' : undefined} spellCheck="false" />
+    {value && (
+      <button onClick={() => onChange({ target: { value: '' } })} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-200 hover:text-white text-xl font-bold leading-none" type="button">X</button>
+    )}
+  </div>
+);
+
+const CardPageHeader = ({ title, subtitle }) => (
+  <div className="mb-3 pb-2 border-b border-amber-700/30 text-center">
+    <h2 className="text-4xl font-black text-white tracking-wide">{title}</h2>
+    {subtitle && <p className="text-amber-300 italic text-xl mt-1">{subtitle}</p>}
+  </div>
+);
+
+const POSTER_STYLE = {
+  backgroundColor: '#0a0a0a',
+  backgroundImage: 'url(' + TW_BG + ')',
+  backgroundSize: 'cover',
+  backgroundPosition: 'center top',
+  backgroundRepeat: 'no-repeat',
+  backgroundAttachment: 'scroll',
+};
+
+const WOOD_STYLE = {
+  backgroundColor: '#0a0a0a',
+  backgroundImage: 'url(' + TW_BG + ')',
+  backgroundSize: 'cover',
+  backgroundPosition: 'center top',
+  backgroundRepeat: 'no-repeat',
+  backgroundAttachment: 'scroll',
+  filter: 'none',
+};
+
+const PageWrapper = ({ children, bgStyle }) => {
+  var bg = bgStyle || POSTER_STYLE;
+  var isListPage = bg === WOOD_STYLE;
+  return (
+    <div style={{ minHeight: '100dvh', width: '100%', position: 'relative', paddingTop: 'env(safe-area-inset-top)', paddingBottom: '5rem', backgroundColor: bg.backgroundColor, backgroundImage: bg.backgroundImage || 'none', backgroundSize: bg.backgroundSize || 'auto', backgroundPosition: bg.backgroundPosition || 'top', backgroundRepeat: bg.backgroundRepeat || 'no-repeat', backgroundAttachment: bg.backgroundAttachment || 'scroll' }}>
+      {isListPage && <div style={{ position: 'fixed', inset: 0, backdropFilter: 'blur(8px)', WebkitBackdropFilter: 'blur(8px)', backgroundColor: 'rgba(10,10,10,0.55)', zIndex: 0 }} />}
+      <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: isListPage ? 'transparent' : 'rgba(10,10,10,0.30)' }} />
+      <div style={{ position: 'relative', zIndex: 10 }}>{children}</div>
+    </div>
+  );
+};
+
+function App() {
+  const [page, setPage] = useState('login');
+  const [auth, setAuth] = useState(false);
+  const [user, setUser] = useState(null);
+  const [destinations, setDestinations] = useState([]);
+  const [notifications, setNotifications] = useState([]);
+  const [expandedAlertGroups, setExpandedAlertGroups] = useState({});
+  const [loading, setLoading] = useState(false);
+  const [backendWaking, setBackendWaking] = useState(false);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [newDest, setNewDest] = useState({ name: '', radius: 50 });
+  const [geoQuery, setGeoQuery] = useState('');
+  const [geoCandidates, setGeoCandidates] = useState([]);
+  const [geoPicked, setGeoPicked] = useState(null);
+  const [geoSearching, setGeoSearching] = useState(false);
+  const [geoMsg, setGeoMsg] = useState('');
+  const [editingId, setEditingId] = useState(null);
+  const [editingName, setEditingName] = useState('');
+  const [showDangerZone, setShowDangerZone] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [drawerData, setDrawerData] = useState(null);
+  const [drawerLoading, setDrawerLoading] = useState(false);
+  const [mapEnlarged, setMapEnlarged] = useState(false);
+  const [apiVersion, setApiVersion] = useState('...');
+  const [addDestMsg, setAddDestMsg] = useState('');
+
+  // Viewport sizing
+  const [viewportW, setViewportW] = useState(typeof window !== 'undefined' ? window.innerWidth : 400);
+  useEffect(() => {
+    const onResize = () => setViewportW(window.innerWidth);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+  const isPhone = viewportW < 640;
+  const isTablet = viewportW >= 640 && viewportW < 1024;
+
+  useEffect(() => {
+    fetch(API_BASE + '/health').then(r => r.json()).then(d => setApiVersion(d.version || '?')).catch(() => setApiVersion('?'));
+    const t = localStorage.getItem('tw_token');
+    const u = localStorage.getItem('tw_user');
+    if (t && u) {
+      try { setUser(JSON.parse(u)); setAuth(true); setPage('search'); loadDestinations(); loadNotifications(); }
+      catch(e) { localStorage.removeItem('tw_token'); localStorage.removeItem('tw_user'); }
+    }
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        setTimeout(() => { document.querySelectorAll('input').forEach(i => i.blur()); }, 100);
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, []);
+
+  const loadDestinations = async () => {
+    try {
+      const token = localStorage.getItem('tw_token');
+      const r = await fetch(API_BASE + '/tw/destinations', { headers: { 'Authorization': 'Bearer ' + token } });
+      if (!r.ok) throw new Error('Failed');
+      setDestinations(await r.json());
+    } catch (e) { console.error(e); }
+  };
+
+  const loadNotifications = async () => {
+    try {
+      const token = localStorage.getItem('tw_token');
+      const r = await fetch(API_BASE + '/tw/notifications', { headers: { 'Authorization': 'Bearer ' + token } });
+      if (!r.ok) throw new Error('Failed');
+      setNotifications(await r.json());
+    } catch (e) { console.error(e); }
+  };
+
+  const dismissAlert = async (notifId) => {
+    const token = localStorage.getItem('tw_token');
+    setNotifications(prev => prev.filter(n => n.id !== notifId));
+    try { await fetch(API_BASE + '/tw/notifications/' + notifId, { method: 'DELETE', headers: { 'Authorization': 'Bearer ' + token } }); } catch(e) {}
+  };
+
+  const doAuth = async (mode) => {
+    if (!email || !password) return;
+    setLoading(true);
+    setBackendWaking(false);
+    const wakingTimer = setTimeout(() => setBackendWaking(true), 3500);
+    try {
+      const r = await fetch(API_BASE + '/tw/auth/' + mode, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email, password: password })
+      });
+      clearTimeout(wakingTimer);
+      setBackendWaking(false);
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        alert(err.detail || 'Authentication failed');
+        setLoading(false);
+        return;
+      }
+      const data = await r.json();
+      localStorage.setItem('tw_token', data.access_token);
+      const u = { email: email };
+      localStorage.setItem('tw_user', JSON.stringify(u));
+      setUser(u); setAuth(true); setPage('search');
+      await loadDestinations();
+      await loadNotifications();
+    } catch (e) {
+      clearTimeout(wakingTimer);
+      setBackendWaking(false);
+      alert('Network error: ' + e.message);
+    }
+    setLoading(false);
+  };
+
+  const doLogout = () => {
+    localStorage.removeItem('tw_token');
+    localStorage.removeItem('tw_user');
+    setUser(null); setAuth(false); setDestinations([]); setNotifications([]);
+    setPage('login');
+  };
+
+  const doDeleteAccount = async () => {
+    const token = localStorage.getItem('tw_token');
+    try {
+      await fetch(API_BASE + '/tw/account', { method: 'DELETE', headers: { 'Authorization': 'Bearer ' + token } });
+    } catch(e) {}
+    doLogout();
+  };
+
+  const doGeocode = async () => {
+    setGeoMsg('');
+    setGeoCandidates([]);
+    setGeoPicked(null);
+    var q = (geoQuery || '').trim();
+    if (q.length < 2) { setGeoMsg('Type a city, country, or landmark.'); return; }
+    setGeoSearching(true);
+    try {
+      var token = localStorage.getItem('tw_token');
+      var r = await fetch(API_BASE + '/tw/geocode', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+        body: JSON.stringify({ query: q })
+      });
+      if (!r.ok) {
+        var err = await r.json().catch(function(){ return {}; });
+        setGeoMsg(err.detail || 'Search failed. Try a different query.');
+        setGeoSearching(false);
+        return;
+      }
+      var data = await r.json();
+      var cands = data.candidates || [];
+      setGeoCandidates(cands);
+      if (cands.length === 0) setGeoMsg('No matches. Try a more specific query.');
+    } catch (e) {
+      setGeoMsg('Network error: ' + e.message);
+    }
+    setGeoSearching(false);
+  };
+
+  const addDestination = async () => {
+    setAddDestMsg('');
+    var name = (newDest.name || '').trim();
+    var radius = parseFloat(newDest.radius) || 50;
+    if (!geoPicked) {
+      setAddDestMsg('Search and pick a destination first.');
+      return;
+    }
+    if (!name) name = geoPicked.formatted_address.split(',')[0].trim();
+    var token = localStorage.getItem('tw_token');
+    try {
+      var r = await fetch(API_BASE + '/tw/destinations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+        body: JSON.stringify({
+          name: name,
+          lat: geoPicked.lat,
+          lng: geoPicked.lng,
+          country: geoPicked.country || null,
+          country_code: geoPicked.country_code || null,
+          formatted_address: geoPicked.formatted_address,
+          radius_mi: radius,
+          alert_level: 'realtime'
+        })
+      });
+      if (!r.ok) {
+        var err = await r.json().catch(function(){ return {}; });
+        setAddDestMsg(err.detail || 'Failed to add destination.');
+        return;
+      }
+      setNewDest({ name: '', radius: 50 });
+      setGeoQuery('');
+      setGeoCandidates([]);
+      setGeoPicked(null);
+      setAddDestMsg('Added "' + name + '" to your watchlist.');
+      await loadDestinations();
+      setTimeout(function(){ setAddDestMsg(''); setPage('watchlist'); }, 900);
+    } catch (e) {
+      setAddDestMsg('Network error: ' + e.message);
+    }
+  };
+
+  const setDestInMyDestinations = async (id, saved) => {
+    // Toggles in_my_destinations flag. Never removes from Watchlist —
+    // Watchlist contains ALL destinations and is the live monitor.
+    var token = localStorage.getItem('tw_token');
+    try {
+      var r = await fetch(API_BASE + '/tw/destinations/' + id, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+        body: JSON.stringify({ in_my_destinations: saved })
+      });
+      if (r.ok) {
+        setDestinations(function(prev) {
+          return prev.map(function(d) {
+            if (d.id === id) return Object.assign({}, d, { in_my_destinations: saved });
+            return d;
+          });
+        });
+      }
+    } catch(e) { console.error('save to my destinations failed:', e); }
+  };
+
+  const renameDestination = async (id, name) => {
+    var token = localStorage.getItem('tw_token');
+    try {
+      var r = await fetch(API_BASE + '/tw/destinations/' + id, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+        body: JSON.stringify({ name: name })
+      });
+      if (r.ok) {
+        setDestinations(function(prev) {
+          return prev.map(function(d) {
+            if (d.id === id) return Object.assign({}, d, { name: name });
+            return d;
+          });
+        });
+      }
+    } catch(e) { console.error('rename failed:', e); }
+  };
+
+  const removeDestination = async (id) => {
+    var token = localStorage.getItem('tw_token');
+    try {
+      var r = await fetch(API_BASE + '/tw/destinations/' + id, { method: 'DELETE', headers: { 'Authorization': 'Bearer ' + token } });
+      if (r.ok) {
+        setDestinations(function(prev) { return prev.filter(function(d) { return d.id !== id; }); });
+      }
+    } catch(e) { console.error('delete failed:', e); }
+  };
+
+  const openDestinationDrawer = async (dest) => {
+    setDrawerData({ destination: dest, advisory: null, outbreaks: [], marine: [] });
+    setDrawerLoading(true);
+    const token = localStorage.getItem('tw_token');
+    try {
+      const r = await fetch(API_BASE + '/tw/destinations/' + dest.id + '/signals', { headers: { 'Authorization': 'Bearer ' + token } });
+      if (r.ok) {
+        const data = await r.json();
+        setDrawerData(data);
+      }
+    } catch(e) { console.error(e); }
+    setDrawerLoading(false);
+  };
+
+  const SignalsDrawer = () => {
+    if (!drawerData) return null;
+    const dest = drawerData.destination || {};
+    const advisory = drawerData.advisory || null;
+    const outbreaks = drawerData.outbreaks || [];
+    const marine = drawerData.marine || [];
+    const hasAnySignal = advisory || outbreaks.length > 0 || marine.length > 0;
+    return (
+      <div>
+        <div className="modal-overlay" onClick={() => setDrawerData(null)} />
+        <div className="modal-drawer">
+          <div className="px-4 pt-4 pb-2 border-b border-amber-800/40 flex items-start justify-between">
+            <div className="flex-1 min-w-0 pr-2">
+              <h2 className="text-2xl font-bold text-white truncate">{dest.name}</h2>
+              <p className="text-amber-300 text-base">
+                {dest.country || 'Unknown country'} · {dest.radius_mi} mi radius
+              </p>
+            </div>
+            <button onClick={() => setDrawerData(null)} className="text-gray-200 hover:text-white text-2xl font-bold">X</button>
+          </div>
+          <div className="px-4 py-3">
+            {drawerLoading && <p className="text-amber-200 text-center py-6 animate-pulse text-xl">Loading travel signals...</p>}
+
+            {!drawerLoading && drawerData && drawerData.static_map_url && (
+              <button onClick={() => setMapEnlarged(true)} className="block w-full mb-3 rounded-xl overflow-hidden border border-amber-800/50">
+                <img src={drawerData.static_map_url} alt="" style={{ width: '100%', display: 'block' }} loading="lazy" />
+                <span className="block text-center text-amber-300 text-sm py-1 bg-stone-900/70">Tap to enlarge</span>
+              </button>
+            )}
+
+            {!drawerLoading && !hasAnySignal && (
+              <div className="py-6 text-center">
+                <p className="text-3xl mb-2">✓</p>
+                <p className="text-white text-2xl font-bold mb-1">No active travel alerts</p>
+                <p className="text-gray-100 text-lg">Watching for new information.</p>
+              </div>
+            )}
+
+            {/* ── Travel Advisory ──────────────────────────────────── */}
+            {!drawerLoading && advisory && (() => {
+              const sty = advisoryLevelStyle(advisory.level);
+              const plainSummary = stripHtml(advisory.summary || '');
+              const shortSummary = truncateWords(plainSummary, 400);
+              return (
+                <div className="rounded-xl overflow-hidden border mb-3" style={{ borderColor: sty.border, backgroundColor: sty.cardBg }}>
+                  <div className="px-3 py-2 flex items-center gap-2" style={{ backgroundColor: sty.headerBg }}>
+                    <span className="text-2xl">🛂</span>
+                    <span className="text-white font-bold text-lg uppercase tracking-wide">Travel Advisory</span>
+                    <span className="ml-auto text-white/80 text-xs uppercase">U.S. State Dept</span>
+                  </div>
+                  <div className="px-3 py-2">
+                    <p className="text-white text-xl font-bold leading-snug">{sty.label}</p>
+                    {advisory.title && <p className="text-gray-100 text-base mt-1">{advisory.title}</p>}
+                    {shortSummary && <p className="text-gray-200 text-base mt-2 leading-snug">{shortSummary}</p>}
+                    {advisory.url && (
+                      <a href={advisory.url} target="_blank" rel="noopener noreferrer" className="text-amber-300 underline text-base mt-2 inline-block">Read full advisory at travel.state.gov →</a>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* ── Health Alerts (WHO Disease Outbreak News) ─────────── */}
+            {!drawerLoading && outbreaks.length > 0 && (
+              <div className="rounded-xl overflow-hidden border mb-3" style={{ borderColor: '#9a3412', backgroundColor: 'rgba(124,45,18,0.40)' }}>
+                <div className="px-3 py-2 flex items-center gap-2" style={{ backgroundColor: '#9a3412' }}>
+                  <span className="text-2xl">🦠</span>
+                  <span className="text-white font-bold text-lg uppercase tracking-wide">Health Alerts</span>
+                  <span className="ml-auto text-white/80 text-xs uppercase">WHO</span>
+                </div>
+                <div className="px-3 py-2 space-y-3">
+                  {outbreaks.map(ob => (
+                    <div key={ob.outbreak_id || ob.id} className="border-b border-amber-900/30 last:border-0 pb-2 last:pb-0">
+                      <p className="text-white text-lg font-semibold leading-snug">{ob.title}</p>
+                      {ob.summary && <p className="text-gray-200 text-base mt-1 leading-snug">{truncateWords(stripHtml(ob.summary), 200)}</p>}
+                      <div className="flex flex-wrap gap-2 mt-2 text-base text-gray-100">
+                        {ob.report_date && <span>🕒 {ob.report_date}</span>}
+                        {ob.country_code && <span>📍 {ob.country_code}</span>}
+                      </div>
+                      {ob.report_url && (
+                        <a href={ob.report_url} target="_blank" rel="noopener noreferrer" className="text-amber-300 underline text-base mt-1 inline-block">WHO report →</a>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* ── Maritime Conditions (NOAA HSF — only if coastal) ──── */}
+            {!drawerLoading && marine.length > 0 && (
+              <div className="space-y-3">
+                {marine.map((m, idx) => {
+                  const sty = seaStateStyle(m.sea_state);
+                  return (
+                    <div key={idx} className="rounded-xl overflow-hidden border" style={{ borderColor: sty.border, backgroundColor: sty.cardBg }}>
+                      <div className="px-3 py-2 flex items-center gap-2" style={{ backgroundColor: sty.headerBg }}>
+                        <span className="text-2xl">🌊</span>
+                        <span className="text-white font-bold text-lg uppercase tracking-wide">Maritime Conditions</span>
+                        <span className="ml-auto text-white/80 text-xs uppercase">NOAA</span>
+                      </div>
+                      <div className="px-3 py-2">
+                        <p className="text-white text-xl font-bold leading-snug">Sea state: {sty.label}</p>
+                        {m.max_wave_m != null && <p className="text-gray-100 text-base mt-1">Max waves ~{Number(m.max_wave_m).toFixed(1)} m</p>}
+                        {m.area_name && <p className="text-gray-200 text-base mt-1">Area: {m.area_name}</p>}
+                        {m.source_url && (
+                          <a href={m.source_url} target="_blank" rel="noopener noreferrer" className="text-amber-300 underline text-base mt-2 inline-block">NOAA High Seas Forecast →</a>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+          <div className="px-4 pb-4">
+            {dest.id && !dest.in_my_destinations && (() => {
+              // Dup-check: same name (case-insensitive) already saved in My Destinations?
+              var dup = destinations.some(function(d) {
+                return d.in_my_destinations && d.id !== dest.id && d.name && dest.name &&
+                       d.name.toLowerCase().trim() === dest.name.toLowerCase().trim();
+              });
+              if (dup) {
+                return (
+                  <div className="w-full py-3 bg-stone-800/40 border border-stone-600/40 text-gray-100 rounded-xl text-lg text-center mb-2">
+                    Already in My Destinations (same name)
+                  </div>
+                );
+              }
+              return (
+                <button onClick={async () => { await setDestInMyDestinations(dest.id, true); setDrawerData(Object.assign({}, drawerData, { destination: Object.assign({}, dest, { in_my_destinations: true }) })); }} className="w-full py-3 bg-amber-700 hover:bg-amber-800 border border-amber-500 text-white rounded-xl text-xl font-semibold mb-2">
+                  Save to My Destinations
+                </button>
+              );
+            })()}
+            {dest.id && dest.in_my_destinations && (
+              <div className="w-full py-3 bg-stone-800/40 border border-stone-600/40 text-gray-100 rounded-xl text-lg text-center mb-2">
+                Saved to My Destinations
+              </div>
+            )}
+            <p className="text-center text-gray-100 text-base mt-2">
+              Sources: U.S. State Dept · WHO · NOAA
+            </p>
+            <button onClick={() => setDrawerData(null)} className="w-full py-4 bg-stone-800/60 border border-stone-700 text-white rounded-xl text-xl mt-2">Close</button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const PT = isPhone ? '41vh' : isTablet ? '36vh' : '34vh';
+  const cardClass = 'rounded-2xl p-4 shadow-2xl border border-amber-700/40 bg-stone-900/80 backdrop-blur-sm';
+  const iClass = 'w-full px-4 py-3 rounded-xl bg-white/10 border border-amber-700/40 text-white placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-amber-400 text-xl';
+  const containerClass = (page === 'info') ? 'w-full max-w-3xl mx-auto px-3' : 'w-full px-3';
+  const unreadCount = notifications.length;
+
+  // ── Login page ──────────────────────────────────────────────────────────────
+
+  if (page === 'login') {
+    return (
+      <div style={{ minHeight: '100dvh', width: '100%', backgroundColor: POSTER_STYLE.backgroundColor, backgroundImage: 'url(' + TW_LOGIN_BG + ')', backgroundSize: POSTER_STYLE.backgroundSize, backgroundPosition: POSTER_STYLE.backgroundPosition, backgroundRepeat: POSTER_STYLE.backgroundRepeat, backgroundAttachment: POSTER_STYLE.backgroundAttachment, display: 'flex', flexDirection: 'column', alignItems: 'stretch', paddingBottom: '4rem' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'flex-end', flex: '1 1 auto', minHeight: '50vh', paddingTop: '2rem', paddingBottom: '1.5rem' }}>
+          <h1 className="text-amber-300 font-black text-center tracking-tight" style={{ fontSize: isPhone ? '6rem' : '7rem', textShadow: '0 2px 14px rgba(0,0,0,0.95), 0 0 28px rgba(0,0,0,0.85)', marginTop: '1rem', lineHeight: '1' }}>Travel<br />Watch</h1>
+        </div>
+        <div style={{ paddingLeft: '1.5rem', paddingRight: '1.5rem', paddingBottom: '2rem' }}>
+          <div className="rounded-2xl p-4 shadow-2xl border border-amber-400/50 space-y-3" style={{ backgroundColor: 'rgba(28,20,16,0.85)', backdropFilter: 'blur(8px)' }}>
+            <input id="tw-login-email" type="email" name="tw-login-email" placeholder="Email address" value={email} onChange={(e) => setEmail(e.target.value)} onFocus={(e) => { setTimeout(() => { e.target.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, 350); }} onKeyPress={(e) => e.key === 'Enter' && doAuth('login')} autoComplete="email" autoCorrect="off" autoCapitalize="off" spellCheck="false" className="w-full px-4 py-3 rounded-xl bg-white/15 border border-white/30 text-white placeholder-white/60 focus:outline-none focus:ring-2 focus:ring-amber-400 text-xl" />
+            <div className="relative">
+              <input id="tw-login-password" type={showPassword ? 'text' : 'password'} name="tw-login-password" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} onFocus={(e) => { setTimeout(() => { e.target.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, 350); }} onKeyPress={(e) => e.key === 'Enter' && doAuth('login')} autoComplete="current-password" autoCorrect="off" autoCapitalize="off" spellCheck="false" className="w-full px-4 py-3 rounded-xl bg-white/15 border border-white/30 text-white placeholder-white/60 focus:outline-none focus:ring-2 focus:ring-amber-400 text-xl" />
+              <button onClick={() => setShowPassword(!showPassword)} className="absolute right-3 top-1/2 -translate-y-1/2 text-white/60">{showPassword ? <EyeOffIcon /> : <EyeIcon />}</button>
+            </div>
+            {backendWaking && <p className="text-white/60 text-xl text-center animate-pulse">Waking up the server...</p>}
+            <div className="grid grid-cols-2 gap-3">
+              <button onClick={() => doAuth('login')} disabled={loading} className="py-4 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-xl disabled:opacity-50 text-2xl">{loading ? '...' : 'Sign In'}</button>
+              <button onClick={() => doAuth('register')} disabled={loading} className="py-4 bg-stone-700/60 hover:bg-stone-800/80 text-white font-bold rounded-xl disabled:opacity-50 text-2xl border border-amber-400/60">{loading ? '...' : 'Register'}</button>
+            </div>
+            <p className="text-white/50 text-base text-center">You'll stay signed in automatically</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Watchlist = ALL destinations (cron monitors them all, drawer does live recheck)
+  // My Destinations = subset with in_my_destinations=true (additional saved-for-reference flag)
+  // A destination lives in BOTH simultaneously when saved to My Destinations.
+  var activeDestinations = destinations;
+  var savedDestinations = destinations.filter(function(d) { return d.in_my_destinations; });
+
+  return (
+    <PageWrapper bgStyle={page === 'watchlist' || page === 'destinations' || page === 'alerts' ? WOOD_STYLE : POSTER_STYLE}>
+      <SignalsDrawer />
+      {mapEnlarged && drawerData && drawerData.static_map_url && (
+        <div onClick={() => setMapEnlarged(false)} style={{ position: 'fixed', inset: 0, zIndex: 200, background: 'rgba(0,0,0,0.92)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem' }}>
+          <div style={{ position: 'relative', width: '100%', maxWidth: '900px' }}>
+            <button onClick={() => setMapEnlarged(false)} style={{ position: 'absolute', top: '-2.5rem', right: '0.25rem', color: 'white', fontSize: '1.5rem', fontWeight: 'bold' }}>X</button>
+            <img src={drawerData.static_map_url} alt="" style={{ width: '100%', display: 'block', borderRadius: '12px', border: '1px solid #78350f' }} />
+            <p style={{ color: '#fcd34d', textAlign: 'center', marginTop: '0.5rem', fontSize: '0.95rem' }}>Tap anywhere to close</p>
+          </div>
+        </div>
+      )}
+      <div className={containerClass}>
+
+        {/* ── Search / Add Destination ────────────────────────────────── */}
+        {page === 'search' && (() => {
+          var SEARCH_PT = isPhone ? '38vh' : isTablet ? '36vh' : '34vh';
+          return (
+          <div className="space-y-3" style={{ paddingTop: SEARCH_PT, paddingBottom: '6rem' }}>
+            <div className="flex flex-col items-center justify-end" style={{ minHeight: SEARCH_PT, marginTop: '-' + SEARCH_PT, paddingTop: '0.5rem', paddingBottom: '0.75rem', pointerEvents: 'none', overflow: 'visible' }}>
+              <p className="text-amber-300 font-bold italic text-center" style={{ fontSize: isPhone ? '2.5rem' : '3rem', textShadow: '0 2px 10px rgba(0,0,0,0.95), 0 0 20px rgba(0,0,0,0.8)', marginTop: '0.25rem', lineHeight: '1.05' }}>Watch<br />Your Travels</p>
+            </div>
+            <div className={cardClass} style={{ overflowY: 'auto', maxHeight: 'calc(100dvh - ' + SEARCH_PT + ' - 7rem)', backgroundColor: 'rgba(28,20,16,0.85)' }}>
+              <CardPageHeader title="Add a Destination" subtitle="Get Travel Alerts Where You Go" />
+              <div className="space-y-3">
+                <ClearableInput value={geoQuery} onChange={(e) => { setGeoQuery(e.target.value); setGeoPicked(null); }} onKeyPress={(e) => e.key === 'Enter' && doGeocode()} placeholder="Paris · Cabo San Lucas · Kyoto, Japan" inputClass={iClass} />
+                <button onClick={doGeocode} disabled={geoSearching} className="w-full py-3 bg-amber-600 hover:bg-amber-700 disabled:opacity-60 text-white rounded-lg flex items-center justify-center gap-2 text-xl font-bold">
+                  {geoSearching ? 'Searching…' : 'Search'}
+                </button>
+                <p className="text-gray-100 text-sm text-center leading-snug">
+                  City, country, address, or landmark — we're forgiving.
+                  {' '}
+                  <button onClick={() => setPage('info')} className="text-amber-300 underline decoration-dotted">Your data is safe.</button>
+                </p>
+                {geoMsg && <p className="text-amber-300 text-center text-base">{geoMsg}</p>}
+                {geoCandidates.length > 0 && (
+                  <div className="space-y-2 mt-1">
+                    <p className="text-amber-200 text-base text-center">Pick the best match:</p>
+                    {geoCandidates.map(function(c, i) {
+                      var picked = geoPicked && geoPicked.place_id === c.place_id;
+                      return (
+                        <button key={c.place_id || i} onClick={function(){ setGeoPicked(c); }} className={'w-full text-left p-3 rounded-lg border ' + (picked ? 'bg-amber-700 border-amber-400 text-white' : 'bg-stone-800/60 border-stone-700/40 text-amber-100 hover:border-amber-600')}>
+                          <span className="text-lg">{c.formatted_address}</span>
+                          {c.country && <span className="block text-xs opacity-70 mt-1">{c.country}{c.country_code ? ' (' + c.country_code + ')' : ''}</span>}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+                {geoPicked && (
+                  <div className="space-y-3 pt-2 border-t border-amber-700/40">
+                    <ClearableInput value={newDest.name} onChange={(e) => setNewDest(Object.assign({}, newDest, { name: e.target.value }))} onBlur={(e) => setNewDest(Object.assign({}, newDest, { name: smartTitleCase(e.target.value.trim()) }))} onKeyPress={(e) => e.key === 'Enter' && addDestination()} placeholder={'Name this destination (default: ' + geoPicked.formatted_address.split(',')[0].trim() + ')'} inputClass={iClass} />
+                    <div>
+                      <p className="text-amber-200 text-base mb-2 text-center">Radius</p>
+                      <div className="grid grid-cols-4 gap-2">
+                        {RADIUS_PRESETS.map(r => (
+                          <button key={r} onClick={() => setNewDest(Object.assign({}, newDest, { radius: r }))} className={'py-3 rounded-lg text-xl font-bold border ' + (newDest.radius === r ? 'bg-amber-600 text-white border-amber-400' : 'bg-stone-800/60 text-amber-200 border-stone-700/40')}>
+                            {r} mi
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <button onClick={addDestination} className="w-full py-3 bg-amber-600 hover:bg-amber-700 text-white rounded-lg flex items-center justify-center gap-2 text-2xl font-bold">
+                      <PlusIcon /> Add to Watchlist
+                    </button>
+                  </div>
+                )}
+                {addDestMsg && <p className="text-amber-300 text-center text-xl">{addDestMsg}</p>}
+                <p className="text-gray-100 text-base text-center leading-snug px-2 pt-2 border-t border-amber-700/30">
+                  Information from U.S. State Department, World Health Organization, and NOAA.
+                </p>
+              </div>
+            </div>
+          </div>
+          );
+        })()}
+
+        {/* ── Watchlist ──────────────────────────────────────────────────── */}
+        {page === 'watchlist' && (
+          <div className="space-y-3" style={{ paddingTop: activeDestinations.length > 0 ? '1rem' : PT }}>
+            <div className={cardClass}>
+              <CardPageHeader title="Watchlist" subtitle="Tap a destination to see current alerts" />
+              {activeDestinations.length === 0 && (
+                <div className="py-6 text-center">
+                  <p className="text-gray-100 text-xl leading-relaxed mb-2">No destinations yet.</p>
+                  <p className="text-amber-300 text-xl font-medium">Use Search to add a destination.</p>
+                </div>
+              )}
+            </div>
+            {activeDestinations.length > 0 && (
+              <div className={cardClass + ' mt-3'}>
+                <h2 className="text-3xl font-bold mb-1 text-white text-center">Your Watchlist ({activeDestinations.length})</h2>
+                <div className="space-y-2 mt-2">
+                  {activeDestinations.map(d => (
+                    <div key={d.id} className="p-4 rounded-lg border bg-stone-800/50 border-stone-700/30">
+                      {editingId === d.id ? (
+                        <div className="space-y-2">
+                          <ClearableInput value={editingName} onChange={(e) => setEditingName(e.target.value)} placeholder="Destination name" inputClass="w-full px-3 py-4 border border-amber-700 rounded-lg focus:ring-2 focus:ring-amber-400 text-2xl bg-stone-700 text-white placeholder-gray-400" />
+                          <div className="flex gap-2">
+                            <button onClick={async () => { await renameDestination(d.id, smartTitleCase(editingName)); setEditingId(null); setEditingName(''); }} className="flex-1 py-4 bg-amber-600 text-white rounded-lg text-2xl font-bold">Save</button>
+                            <button onClick={() => { setEditingId(null); setEditingName(''); }} className="flex-1 py-4 bg-stone-600 text-gray-200 rounded-lg text-2xl">Cancel</button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="flex items-center justify-between">
+                          <div className="flex-1 min-w-0">
+                            <button onClick={() => openDestinationDrawer(d)} className="text-left w-full">
+                              <h3 className="font-semibold text-2xl text-white hover:text-amber-300 underline decoration-dotted truncate">{d.name}</h3>
+                            </button>
+                            <p className="text-xl text-gray-200">{d.country || '—'} · {d.radius_mi} mi</p>
+                            <div className="flex items-center gap-1 mt-1"><CheckIcon /><span className="text-xl text-amber-400">Watching</span></div>
+                          </div>
+                          <div className="flex gap-2 ml-2 shrink-0">
+                            <button onClick={() => { setEditingId(d.id); setEditingName(d.name); }} className="p-2 text-amber-400 hover:bg-stone-700/30 rounded-lg"><EditIcon /></button>
+                            <button onClick={() => removeDestination(d.id)} className="p-2 text-amber-400 hover:bg-stone-700/30 rounded-lg"><TrashIcon /></button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── My Destinations (saved) ────────────────────────────────────── */}
+        {page === 'destinations' && (
+          <div className="space-y-3" style={{ paddingTop: '1rem' }}>
+            <div className={cardClass}>
+              <CardPageHeader title="My Destinations" subtitle="Your saved collection — also being watched" />
+              {savedDestinations.length === 0 ? (
+                <div className="text-center py-6">
+                  <p className="text-gray-100 text-xl leading-relaxed">Saved destinations appear here for quick reference.</p>
+                  <p className="text-gray-200 text-base mt-2">They also stay on your Watchlist for monitoring. Tap "Save to My Destinations" inside any drawer.</p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {savedDestinations.map(d => (
+                    <div key={d.id} className="p-4 bg-stone-900/70 rounded-lg border border-stone-600/50">
+                      <div className="flex items-center justify-between">
+                        <div className="flex-1 min-w-0">
+                          <button onClick={() => openDestinationDrawer(d)} className="text-left w-full">
+                            <h3 className="font-semibold text-2xl text-white underline decoration-dotted truncate">{d.name}</h3>
+                          </button>
+                          <span className="text-xl text-gray-200 font-bold">Saved</span>
+                          <p className="text-gray-300 text-lg">{d.country || '—'} · {d.radius_mi} mi</p>
+                        </div>
+                        <button onClick={() => removeDestination(d.id)} className="p-2 text-amber-400 hover:bg-stone-700/30 rounded-lg ml-2 shrink-0"><TrashIcon /></button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ── Alerts feed ───────────────────────────────────────────────── */}
+        {page === 'alerts' && (
+          <div className="space-y-3" style={{ paddingTop: '1rem' }}>
+            <div className={cardClass}>
+              <CardPageHeader title="Alerts" subtitle="Latest travel signals on your destinations" />
+              {notifications.length === 0 ? (
+                <div className="text-center py-4">
+                  <p className="text-white font-bold text-2xl">No alerts yet</p>
+                  <p className="text-gray-200 text-xl mt-1">We'll notify you when a travel advisory, outbreak, or maritime alert affects a destination on your watchlist.</p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {(() => {
+                    var groups = {};
+                    var order = [];
+                    for (var ni = 0; ni < notifications.length; ni++) {
+                      var n = notifications[ni];
+                      var key = n.watchlist_id || ('name:' + n.name);
+                      if (!groups[key]) { groups[key] = { name: n.name, watchlist_id: n.watchlist_id, items: [], latest: n.created_at }; order.push(key); }
+                      groups[key].items.push(n);
+                      if (n.created_at > groups[key].latest) groups[key].latest = n.created_at;
+                    }
+                    return order.map(function(k) {
+                      var g = groups[k];
+                      var isExpanded = !!expandedAlertGroups[k];
+                      var visibleItems = isExpanded ? g.items : g.items.slice(0, 1);
+                      var moreCount = g.items.length - 1;
+                      return (
+                        <div key={k} className="p-3 bg-stone-900/50 border border-stone-800 rounded-xl">
+                          <h3 className="font-bold text-white text-2xl mb-1">{g.name || 'Destination'}</h3>
+                          <ul className="mb-2 space-y-1">
+                            {visibleItems.map(function(item) {
+                              return <li key={item.id} className="text-gray-200 text-base leading-snug">• {item.message}</li>;
+                            })}
+                          </ul>
+                          {moreCount > 0 && (
+                            <button onClick={() => setExpandedAlertGroups(Object.assign({}, expandedAlertGroups, { [k]: !isExpanded }))} className="text-amber-300 text-base font-semibold underline decoration-dotted mb-2">
+                              {isExpanded ? 'Show less' : ('+ ' + moreCount + ' more ' + (moreCount === 1 ? 'alert' : 'alerts'))}
+                            </button>
+                          )}
+                          <p className="text-gray-200 text-sm mt-1 mb-2">{new Date(g.latest).toLocaleDateString()}</p>
+                          <div className="flex gap-2">
+                            <button onClick={() => {
+                              var watchedDest = destinations.find(function(d) { return d.id === g.watchlist_id; });
+                              if (watchedDest) openDestinationDrawer(watchedDest);
+                            }} className="flex-1 py-2 bg-amber-700/50 border border-amber-600/50 text-white rounded-lg text-xl font-bold">View</button>
+                            <button onClick={async () => {
+                              for (var di = 0; di < g.items.length; di++) { try { await dismissAlert(g.items[di].id); } catch(e) {} }
+                            }} className="flex-1 py-2 bg-transparent border border-stone-700/50 text-amber-400 rounded-lg text-base">
+                              Dismiss<span className="block text-amber-600 text-xs leading-tight">Remove All</span>
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    });
+                  })()}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ── Info ───────────────────────────────────────────────────────── */}
+        {page === 'info' && (
+          <div className="space-y-4 pb-8" style={{ paddingTop: '1rem' }}>
+            <div className={cardClass}>
+              <div className="mb-3 pb-2 border-b border-amber-700/30 text-center">
+                <h2 className="text-4xl font-black text-white tracking-wide">About</h2>
+                <h2 className="text-4xl font-black text-white tracking-wide">Travel Watch</h2>
+              </div>
+              <p className="text-amber-300 italic text-xl text-center mb-3">v{APP_VERSION}</p>
+              <div className="flex items-center gap-4 mb-4">
+                <img src={BILL_PHOTO} alt="Bill Spencer" className="w-14 h-14 rounded-full object-cover border-2 border-amber-600 shadow-lg shrink-0" />
+                <div>
+                  <p className="font-bold text-white text-xl">Bill Spencer</p>
+                  <p className="text-amber-400 italic text-xl">Founder</p>
+                  <a href="mailto:hello@travelwatch.app" className="text-amber-400 text-xl mt-1 block">hello@travelwatch.app</a>
+                </div>
+              </div>
+              <p className="text-amber-200 text-2xl font-bold italic mb-3">Watch your travels.</p>
+              <div className="space-y-3 text-gray-200 text-xl leading-relaxed">
+                <p>Places you're going. Places you love. Places you watch from afar.</p>
+                <p>Travel conditions change. Advisories get raised, outbreaks emerge, seas get rough — and the signals are scattered across government sites, health bulletins, and weather feeds.</p>
+                <p>Travel Watch brings them together: a simple way to follow the destinations you care about and get notified when something changes.</p>
+                <p>Travel Watch monitors public information from government and international sources. No ads. No subscriptions. Just useful answers.</p>
+              </div>
+            </div>
+            <div className={cardClass}>
+              <h3 className="text-white text-2xl font-bold mb-4 text-center">How it works</h3>
+              <div className="space-y-4">
+                <div className="flex gap-3 items-start"><span className="text-amber-400 text-2xl font-black w-7 shrink-0">1.</span><p className="text-gray-100 text-xl">Add a destination — city, country, or landmark. We convert this to a location for matching against advisories, outbreaks, and maritime feeds.</p></div>
+                <div className="flex gap-3 items-start"><span className="text-amber-400 text-2xl font-black w-7 shrink-0">2.</span><p className="text-gray-100 text-xl">Travel Watch checks public sources every 24 hours and matches new signals to your watched destinations. Premium users will get faster checks.</p></div>
+                <div className="flex gap-3 items-start"><span className="text-amber-400 text-2xl font-black w-7 shrink-0">3.</span><p className="text-gray-100 text-xl">When something happens — advisory raised, outbreak reported, seas turning rough — you'll see an alert with the type, severity, and source.</p></div>
+                <div className="flex gap-3 items-start"><span className="text-amber-400 text-2xl font-black w-7 shrink-0">4.</span><p className="text-gray-100 text-xl">Travel Watch is free. Premium features may include faster check intervals, email digests, and custom filters.</p></div>
+              </div>
+            </div>
+            <div className={cardClass}>
+              <h3 className="text-white text-2xl font-bold mb-3">Data Sources</h3>
+              <div className="space-y-2 text-gray-100 text-xl leading-relaxed">
+                <p><strong className="text-white">U.S. State Department</strong> &mdash; Travel advisories (Levels 1–4) by country.</p>
+                <p><strong className="text-white">World Health Organization</strong> &mdash; Disease Outbreak News bulletins.</p>
+                <p><strong className="text-white">NOAA</strong> &mdash; High Seas Forecast for coastal destinations.</p>
+              </div>
+            </div>
+            <div className={cardClass}>
+              <h3 className="font-bold text-white mb-1 text-2xl">Privacy Policy</h3>
+              <p className="text-gray-200 text-xl mb-3">Last updated: May 2026</p>
+              <div className="space-y-3 text-gray-200 text-xl leading-relaxed">
+                <p><strong className="text-white">We collect:</strong> your email address, your watched destinations, and anonymous usage data.</p>
+                <p><strong className="text-white">Addresses are safe:</strong> When you search for a destination, we send the query you typed to Google's geocoding service to convert it to coordinates. We don't store your address — only the resulting latitude/longitude, country code, and the name you give the destination.</p>
+                <p><strong className="text-white">How we use it:</strong> We do not sell your personal information. Ever.</p>
+                <p><strong className="text-white">Data sources:</strong> Travel signals are based on public information from the U.S. State Department, the World Health Organization, and NOAA.</p>
+                <p><strong className="text-white">Your rights:</strong> You may delete your account and all associated data at any time.</p>
+                <p><strong className="text-white">Disclaimer:</strong> Travel information is provided for informational purposes only. Always follow guidance from local authorities and your government. Travel Watch is not a substitute for official advisories or emergency notifications.</p>
+                <a href="mailto:hello@travelwatch.app" className="text-amber-400 text-xl">hello@travelwatch.app</a>
+              </div>
+            </div>
+            {/* Try our other Watchlist apps */}
+            <div className={cardClass}>
+              <h3 className="text-white text-2xl font-bold mb-3 text-center">Try our other Watchlist apps</h3>
+              <div className="space-y-3">
+                <a href="https://3brains.app" target="_blank" rel="noopener noreferrer"
+                  className="block w-full py-4 bg-amber-700 hover:bg-stone-800 text-white text-center rounded-xl text-xl font-semibold">
+                  Visit Our Site
+                </a>
+              </div>
+            </div>
+            <div className="px-1 space-y-3 pb-2">
+              <div className="p-3 bg-black/30 rounded-xl"><p className="font-medium text-gray-200 text-xl text-center">{user && user.email}</p></div>
+              <button onClick={doLogout} className="w-full py-4 bg-amber-700 hover:bg-stone-800 text-white rounded-xl text-2xl font-bold">Sign Out</button>
+              <button onClick={() => setShowDangerZone(!showDangerZone)} className="w-full py-3 text-gray-300 text-xl text-center">{showDangerZone ? 'Hide' : 'Account Removal'}</button>
+              {showDangerZone && (
+                <div className="space-y-3">
+                  {!showDeleteConfirm
+                    ? <button onClick={() => setShowDeleteConfirm(true)} className="w-full py-4 bg-stone-900/70 border border-stone-800 text-amber-400 rounded-xl text-xl">Delete Account</button>
+                    : <div className="bg-stone-900/90 border border-stone-800 rounded-2xl p-5 space-y-3">
+                        <h3 className="font-bold text-amber-400 text-xl">Are you sure?</h3>
+                        <p className="text-amber-300 text-xl">This will permanently delete your account and all data.</p>
+                        <button onClick={doDeleteAccount} className="w-full py-4 bg-amber-700 text-white rounded-xl font-bold text-xl">Yes, Permanently Delete My Account</button>
+                        <button onClick={() => { setShowDeleteConfirm(false); setShowDangerZone(false); }} className="w-full py-4 bg-stone-800 border border-stone-600 text-gray-100 rounded-xl font-medium text-xl">Cancel</button>
+                      </div>
+                  }
+                </div>
+              )}
+            </div>
+            <p className="text-white/30 text-center text-sm pb-4">v{APP_VERSION}</p>
+          </div>
+        )}
+
+      </div>
+
+      {/* ── Bottom nav ───────────────────────────────────────────────────── */}
+      <div style={{ position: 'fixed', bottom: 0, left: 0, right: 0, backgroundColor: 'rgba(10,10,10,0.95)', backdropFilter: 'blur(8px)', borderTop: '1px solid #78350f', padding: '0.5rem 1rem', paddingBottom: 'max(0.5rem, env(safe-area-inset-bottom))' }}>
+        <div className="flex justify-around max-w-sm mx-auto">
+          <button onClick={() => setPage('search')} className={'flex flex-col items-center gap-0.5 px-1 py-1 ' + (page === 'search' ? 'text-amber-400' : 'text-gray-200')}>
+            <SearchIcon /><span className="text-xl font-medium">Search</span>
+          </button>
+          <button onClick={() => setPage('watchlist')} className={'flex flex-col items-center gap-0.5 px-1 py-1 ' + (page === 'watchlist' ? 'text-amber-400' : 'text-gray-200')}>
+            <HeartIcon /><span className="text-xl font-medium">Watchlist</span>
+          </button>
+          <button onClick={() => setPage('destinations')} className={'flex flex-col items-center gap-0.5 px-1 py-1 ' + (page === 'destinations' ? 'text-amber-400' : 'text-gray-200')}>
+            <PinIcon />
+            <span className="text-xl font-medium">My Destinations</span>
+          </button>
+          <button onClick={() => setPage('info')} className={'flex flex-col items-center gap-0.5 px-1 py-1 ' + (page === 'info' ? 'text-amber-400' : 'text-gray-200')}>
+            <InfoIcon /><span className="text-xl font-medium">Info</span>
+          </button>
+          <button onClick={() => setPage('alerts')} className={'flex flex-col items-center gap-0.5 px-1 py-1 relative ' + (page === 'alerts' ? 'text-amber-400' : 'text-gray-200')}>
+            <BellIcon red={unreadCount > 0} />
+            {unreadCount > 0 && <span className="absolute top-0 right-1 bg-amber-600 text-white text-xl font-bold rounded-full w-4 h-4 flex items-center justify-center">{unreadCount > 9 ? '9+' : unreadCount}</span>}
+            <span className="text-xl font-medium" style={unreadCount > 0 ? {color:'#d97706'} : {}}>Alerts</span>
+          </button>
+        </div>
+        <p className="text-center text-gray-600 text-xs mt-1" style={{display: page === 'search' ? 'none' : 'block'}}>app v{APP_VERSION} | api v{apiVersion}</p>
+      </div>
+    </PageWrapper>
+  );
+}
+
+ReactDOM.render(React.createElement(App), document.getElementById('root'));
+</script>
+<script>
+  window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments); };
+</script>
+<script defer src="/_vercel/insights/script.js"></script>
+</body>
+</html>
