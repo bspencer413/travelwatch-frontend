@@ -204,8 +204,7 @@ const PageWrapper = ({ children, bgStyle }) => {
   var isListPage = bg === WOOD_STYLE;
   return (
     <div style={{ minHeight: '100dvh', width: '100%', position: 'relative', paddingTop: 'env(safe-area-inset-top)', paddingBottom: '5rem', backgroundColor: bg.backgroundColor, backgroundImage: bg.backgroundImage || 'none', backgroundSize: bg.backgroundSize || 'auto', backgroundPosition: bg.backgroundPosition || 'top', backgroundRepeat: bg.backgroundRepeat || 'no-repeat', backgroundAttachment: bg.backgroundAttachment || 'scroll' }}>
-      {isListPage && <div style={{ position: 'fixed', inset: 0, backdropFilter: 'blur(8px)', WebkitBackdropFilter: 'blur(8px)', backgroundColor: 'rgba(10,10,10,0.55)', zIndex: 0 }} />}
-      <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: isListPage ? 'transparent' : 'rgba(10,10,10,0.30)' }} />
+      <div style={{ position: 'fixed', inset: 0, backdropFilter: 'blur(16px)', WebkitBackdropFilter: 'blur(16px)', backgroundColor: isListPage ? 'rgba(10,10,10,0.55)' : 'rgba(10,10,10,0.40)', zIndex: 0 }} />
       <div style={{ position: 'relative', zIndex: 10 }}>{children}</div>
     </div>
   );
@@ -634,7 +633,9 @@ function App() {
 
   if (page === 'login') {
     return (
-      <div style={{ minHeight: '100dvh', width: '100%', backgroundColor: POSTER_STYLE.backgroundColor, backgroundImage: 'url(' + TW_LOGIN_BG + ')', backgroundSize: POSTER_STYLE.backgroundSize, backgroundPosition: POSTER_STYLE.backgroundPosition, backgroundRepeat: POSTER_STYLE.backgroundRepeat, backgroundAttachment: POSTER_STYLE.backgroundAttachment, display: 'flex', flexDirection: 'column', alignItems: 'stretch', paddingBottom: '4rem' }}>
+      <div style={{ minHeight: '100dvh', width: '100%', backgroundColor: POSTER_STYLE.backgroundColor, backgroundImage: 'url(' + TW_LOGIN_BG + ')', backgroundSize: POSTER_STYLE.backgroundSize, backgroundPosition: POSTER_STYLE.backgroundPosition, backgroundRepeat: POSTER_STYLE.backgroundRepeat, backgroundAttachment: POSTER_STYLE.backgroundAttachment, display: 'flex', flexDirection: 'column', alignItems: 'stretch', paddingBottom: '4rem', position: 'relative' }}>
+        <div style={{ position: 'fixed', inset: 0, backdropFilter: 'blur(16px)', WebkitBackdropFilter: 'blur(16px)', backgroundColor: 'rgba(10,10,10,0.40)', zIndex: 0 }} />
+        <div style={{ position: 'relative', zIndex: 10, display: 'flex', flexDirection: 'column', alignItems: 'stretch', flex: '1 1 auto' }}>
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'flex-end', flex: '1 1 auto', minHeight: '50vh', paddingTop: '2rem', paddingBottom: '1.5rem' }}>
           <h1 className="text-amber-300 font-black text-center tracking-tight" style={{ fontSize: isPhone ? '6rem' : '7rem', textShadow: '0 2px 14px rgba(0,0,0,0.95), 0 0 28px rgba(0,0,0,0.85)', marginTop: '1rem', lineHeight: '1' }}>Travel<br />Watch</h1>
         </div>
@@ -652,6 +653,7 @@ function App() {
             </div>
             <p className="text-white/50 text-base text-center">You'll stay signed in automatically</p>
           </div>
+        </div>
         </div>
       </div>
     );
