@@ -53,7 +53,7 @@ const API_BASE = 'https://cruiseship-watch-backend.onrender.com';
 const TW_BG = 'https://raw.githubusercontent.com/bspencer413/travelwatch-frontend/main/tw-bg.png';
 const TW_LOGIN_BG = 'https://raw.githubusercontent.com/bspencer413/travelwatch-frontend/main/tw-bg.png';
 const BILL_PHOTO = 'https://raw.githubusercontent.com/bspencer413/memorial-watch/main/Bill.jpeg';
-const APP_VERSION = '0.1.3';
+const APP_VERSION = '0.1.4';
 
 // ── TW helpers ────────────────────────────────────────────────────────────────
 
@@ -211,11 +211,536 @@ const PageWrapper = ({ children, bgStyle }) => {
   );
 };
 
-function App() {
-  const [page, setPage] = useState('login');
-  const [auth, setAuth] = useState(false);
+// ============================================================================
+// AuthGate v0.2 — 3Brains portable account + anonymous-storage component
+// ============================================================================
+//
+// PURPOSE
+// Drop-in component for any 3Brains app. Handles:
+//   1. Anonymous users save up to freeAnonLimit items to localStorage
+//   2. At the cap, the signup modal opens automatically
+//   3. On signup, localStorage items migrate to the server
+//   4. Returning users sign in via the same modal
+//
+// INSTALL IN A NEW 3BRAINS APP
+//   (a) Paste this entire block into the host index.html immediately AFTER
+//       the SKIN BLOCK constants (so API_BASE is already declared).
+//   (b) Adjust AUTH_GATE_CONFIG below for the host app:
+//         - apiBase, tokenKey, userKey, anonStorageKey, anonSnapshotPrefix
+//         - appName, saveActionLabel, itemNoun, upgradeBenefit
+//         - accentColor (CSS var reference for the host app)
+//   (c) Inside the App() component, at the very top, add:
+//         const gate = useAuthGate(AUTH_GATE_CONFIG);
+//   (d) Use the gate interface throughout App:
+//         - gate.isAuthed (boolean)
+//         - gate.user (object or null)
+//         - gate.list (saved items array, anon localStorage or server)
+//         - gate.add(item) — routes anon vs server, enforces cap
+//         - gate.remove(id) — routes anon vs server
+//         - gate.requireAuth(callback) — gate any action behind sign-in
+//         - gate.openSignup() / gate.openSignin() — open the modal manually
+//         - gate.signOut() — clear token + user, list flips to anon
+//   (e) Render once at the root of the App return:
+//         <gate.Modal />
+//   (f) Render <gate.CounterBanner /> on save-list pages (anon-only display)
+//   (g) Render <gate.EmptyState message="..." /> on auth-gated tabs
+//
+// BACKEND REQUIREMENTS (already met by all 3Brains backends)
+//   POST {registerEndpoint} {email, password} -> {access_token, token_type}
+//   POST {loginEndpoint} {email, password} -> {access_token, token_type}
+//   GET {watchlistEndpoint} -> [{id, name, location, ...}, ...]
+//   POST {watchlistEndpoint} {name, location} -> {id, name, location}
+//   DELETE {watchlistEndpoint}/{id} -> any 2xx
+//
+// MIGRATION FROM PASSWORD TO MAGIC-LINK (Phase 2 / Step B)
+//   Swap the body of submitModal() to call the magic-link request endpoint
+//   and replace the password input with a single email field. The public
+//   surface (gate.add, gate.requireAuth, etc.) does not change — host apps
+//   keep working without modification.
+//
+// CONSTRAINTS (matches all 3Brains apps)
+//   - No JS spread operators (iOS Safari friction). Uses Object.assign / concat.
+//   - No Tailwind JIT arbitrary classes. All styling is inline-style objects.
+//   - React 18 via CDN + Babel. No build toolchain.
+//   - Dark theme assumed. Colors configurable via accentColor + modalBg.
+// ============================================================================
+
+// --- PER-APP CONFIG ---------------------------------------------------------
+// Adjust these values when installing in a new 3Brains app.
+const AUTH_GATE_CONFIG = {
+  apiBase: API_BASE,
+  tokenKey: 'tw_token',
+  userKey: 'tw_user',
+  anonStorageKey: 'tw_anon_destinations',
+  anonSnapshotPrefix: 'tw_dest_',
+  watchlistEndpoint: '/tw/destinations',
+  loginEndpoint: '/tw/auth/login',
+  registerEndpoint: '/tw/auth/register',
+  freeAnonLimit: 5,
+  appName: 'Travel Watch',
+  saveActionLabel: 'save this destination',
+  itemNoun: 'destinations',
+  upgradeBenefit: 'unlimited saves and 12-hour travel alerts',
+  accentColor: '#14b8a6',
+  modalBg: 'rgba(8,20,30,0.95)'
+};
+
+// --- HOOK -------------------------------------------------------------------
+function useAuthGate(config) {
+  const [isAuthed, setIsAuthed] = useState(false);
   const [user, setUser] = useState(null);
-  const [destinations, setDestinations] = useState([]);
+  const [list, setList] = useState([]);
+  const [listLoading, setListLoading] = useState(false);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [modalMode, setModalMode] = useState('signup'); // 'signup' | 'signin'
+  const [modalMessage, setModalMessage] = useState(null);
+  const [modalEmail, setModalEmail] = useState('');
+  const [modalPassword, setModalPassword] = useState('');
+  const [modalShowPwd, setModalShowPwd] = useState(false);
+  const [modalLoading, setModalLoading] = useState(false);
+  const [modalError, setModalError] = useState(null);
+  const [pendingAction, setPendingAction] = useState(null);
+  const [backendWaking, setBackendWaking] = useState(false);
+
+  // -- localStorage helpers
+  const readAnonList = () => {
+    try {
+      const raw = localStorage.getItem(config.anonStorageKey);
+      return raw ? JSON.parse(raw) : [];
+    } catch (e) { return []; }
+  };
+  const writeAnonList = (items) => {
+    try { localStorage.setItem(config.anonStorageKey, JSON.stringify(items)); }
+    catch (e) { console.error('AuthGate: failed to write anon list', e); }
+  };
+  const genAnonId = () => 'anon_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+
+  // -- Server fetch helpers
+  const serverGet = async () => {
+    const t = localStorage.getItem(config.tokenKey);
+    const r = await fetch(config.apiBase + config.watchlistEndpoint, {
+      headers: { 'Authorization': 'Bearer ' + t }
+    });
+    if (!r.ok) throw new Error('Failed to load list');
+    return await r.json();
+  };
+  const serverAdd = async (item) => {
+    // v0.2: pass item shape through unchanged. Host app controls payload.
+    const t = localStorage.getItem(config.tokenKey);
+    const r = await fetch(config.apiBase + config.watchlistEndpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + t },
+      body: JSON.stringify(item)
+    });
+    if (!r.ok) throw new Error('Failed to save');
+    return await r.json();
+  };
+  const serverRemove = async (id) => {
+    const t = localStorage.getItem(config.tokenKey);
+    const r = await fetch(config.apiBase + config.watchlistEndpoint + '/' + id, {
+      method: 'DELETE',
+      headers: { 'Authorization': 'Bearer ' + t }
+    });
+    if (!r.ok) throw new Error('Failed to remove');
+    return true;
+  };
+
+  // -- Refresh the public list (anon localStorage or server, depending on auth)
+  const refreshList = async () => {
+    setListLoading(true);
+    try {
+      if (isAuthed) setList(await serverGet());
+      else setList(readAnonList());
+    } catch (e) {
+      console.error('AuthGate refreshList:', e);
+      setList([]);
+    } finally {
+      setListLoading(false);
+    }
+  };
+
+  // -- Mount: hydrate token + user from localStorage
+  useEffect(() => {
+    const t = localStorage.getItem(config.tokenKey);
+    const u = localStorage.getItem(config.userKey);
+    if (t && u) {
+      try { setUser(JSON.parse(u)); setIsAuthed(true); }
+      catch (e) {
+        localStorage.removeItem(config.tokenKey);
+        localStorage.removeItem(config.userKey);
+      }
+    }
+  // eslint-disable-next-line
+  }, []);
+
+  // -- Reload list whenever auth flips. Also self-heal: if signed in and any
+  //    anon items remain in localStorage (e.g. from a failed migration), retry.
+  useEffect(() => {
+    refreshList();
+    if (isAuthed) {
+      const anon = readAnonList();
+      if (anon && anon.length > 0) {
+        migrateAnonToServer(anon);
+      }
+    }
+  // eslint-disable-next-line
+  }, [isAuthed]);
+
+  // -- Anon -> server migration (called on signup, also self-heal on mount)
+  //    Atomic per-item: each anon item is POSTed individually, removed from
+  //    anon list on success. Partial failure leaves remaining items in anon
+  //    storage for a future retry. Snapshot keys are remapped from temp anon
+  //    IDs to server IDs as part of the migration.
+  const migrateAnonToServer = async (anonItems) => {
+    let remaining = anonItems.slice();
+    let migrated = 0;
+    for (let i = 0; i < anonItems.length; i++) {
+      const anonItem = anonItems[i];
+      try {
+        const created = await serverAdd({ name: anonItem.name, location: anonItem.location });
+        // Remap snapshot key if it exists under the temp anon ID
+        try {
+          const oldKey = config.anonSnapshotPrefix + anonItem.id;
+          const oldSnap = localStorage.getItem(oldKey);
+          if (oldSnap) {
+            localStorage.setItem(config.anonSnapshotPrefix + created.id, oldSnap);
+            localStorage.removeItem(oldKey);
+          }
+        } catch (e) {}
+        remaining = remaining.filter(it => it.id !== anonItem.id);
+        writeAnonList(remaining);
+        migrated++;
+      } catch (e) {
+        console.error('AuthGate: migration failed for item', anonItem.id, e);
+        break; // leave remaining for retry
+      }
+    }
+    if (remaining.length === 0) {
+      try { localStorage.removeItem(config.anonStorageKey); } catch (e) {}
+    }
+    await refreshList();
+    return migrated;
+  };
+
+  // -- Modal openers/closer
+  const openSignup = (msg) => {
+    setModalMode('signup');
+    setModalMessage(msg || null);
+    setModalEmail(''); setModalPassword('');
+    setModalError(null);
+    setModalOpen(true);
+  };
+  const openSignin = (msg) => {
+    setModalMode('signin');
+    setModalMessage(msg || null);
+    setModalEmail(''); setModalPassword('');
+    setModalError(null);
+    setModalOpen(true);
+  };
+  const closeModal = () => {
+    setModalOpen(false);
+    setModalEmail(''); setModalPassword('');
+    setModalMessage(null); setModalError(null);
+    setPendingAction(null);
+  };
+
+  const signOut = () => {
+    localStorage.removeItem(config.tokenKey);
+    localStorage.removeItem(config.userKey);
+    setUser(null);
+    setIsAuthed(false);
+    // The isAuthed-watching useEffect will reload the list from anon storage
+  };
+
+  // -- Public: add an item. Routes anon vs server, enforces anon cap.
+  //    Returns the created item ({id, name, location, ...}) on success.
+  //    Returns null when the anon cap is hit (AuthGate opens the modal and
+  //    queues the action to replay after signup).
+  const add = async (item) => {
+    if (isAuthed) {
+      const created = await serverAdd(item);
+      await refreshList();
+      return created;
+    }
+    const current = readAnonList();
+    if (current.length >= config.freeAnonLimit) {
+      openSignup('You\'ve saved ' + config.freeAnonLimit + ' ' + config.itemNoun
+        + '. Sign up for ' + config.upgradeBenefit + '.');
+      setPendingAction({ type: 'add', item: item });
+      return null;
+    }
+    const id = genAnonId();
+    const newItem = {
+      id: id,
+      name: item.name,
+      location: item.location,
+      status: 'active',
+      is_resolved: false,
+      resolution_outcome: null,
+      created_at: new Date().toISOString()
+    };
+    const updated = current.concat([newItem]);
+    writeAnonList(updated);
+    setList(updated);
+    return newItem;
+  };
+
+  // -- Public: remove an item by id (anon or server)
+  const remove = async (id) => {
+    if (isAuthed) {
+      await serverRemove(id);
+    } else {
+      const current = readAnonList();
+      const updated = current.filter(it => it.id !== id);
+      writeAnonList(updated);
+      try { localStorage.removeItem(config.anonSnapshotPrefix + id); } catch (e) {}
+    }
+    await refreshList();
+  };
+
+  // -- Public: gate an arbitrary action behind sign-in. Runs callback
+  //    immediately if authed; otherwise opens the modal and replays the
+  //    callback after successful sign-in / sign-up.
+  const requireAuth = (callback) => {
+    if (isAuthed) { callback(); return true; }
+    setPendingAction({ type: 'callback', fn: callback });
+    openSignup('Sign up to ' + config.saveActionLabel + '.');
+    return false;
+  };
+
+  // -- Modal submit (calls login or register against backend)
+  const submitModal = async () => {
+    if (!modalEmail || !modalPassword) {
+      setModalError('Email and password required.');
+      return;
+    }
+    setModalLoading(true);
+    setModalError(null);
+    setBackendWaking(false);
+    const wakeTimer = setTimeout(() => setBackendWaking(true), 3000);
+    try {
+      const endpoint = modalMode === 'signup' ? config.registerEndpoint : config.loginEndpoint;
+      const r = await fetch(config.apiBase + endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: modalEmail, password: modalPassword })
+      });
+      clearTimeout(wakeTimer); setBackendWaking(false);
+      if (!r.ok) {
+        const errBody = await r.json().catch(() => ({}));
+        throw new Error(errBody.detail || 'Auth failed');
+      }
+      const data = await r.json();
+      localStorage.setItem(config.tokenKey, data.access_token);
+      const u = { email: modalEmail, name: modalEmail.split('@')[0] };
+      localStorage.setItem(config.userKey, JSON.stringify(u));
+      setUser(u);
+      setIsAuthed(true);
+      // The isAuthed effect handles refreshList + migration
+
+      const pa = pendingAction;
+      setPendingAction(null);
+      setModalOpen(false);
+      setModalEmail(''); setModalPassword('');
+      setModalMessage(null);
+
+      // Replay pending action after isAuthed has propagated. We re-do the
+      // add through serverAdd directly (not gate.add) because the closure
+      // captured the old isAuthed=false.
+      if (pa) {
+        setTimeout(async () => {
+          try {
+            if (pa.type === 'callback' && typeof pa.fn === 'function') {
+              pa.fn();
+            } else if (pa.type === 'add' && pa.item) {
+              await serverAdd(pa.item);
+              await refreshList();
+            }
+          } catch (e) { console.error('AuthGate: replay pending action failed', e); }
+        }, 100);
+      }
+    } catch (e) {
+      clearTimeout(wakeTimer); setBackendWaking(false);
+      setModalError(e.message || 'Auth failed.');
+    } finally {
+      setModalLoading(false);
+    }
+  };
+
+  // -- Modal component
+  const Modal = () => {
+    if (!modalOpen) return null;
+    const isSignup = modalMode === 'signup';
+    return (
+      <>
+        <div onClick={closeModal} style={{
+          position: 'fixed', top: 0, right: 0, bottom: 0, left: 0, zIndex: 999,
+          backgroundColor: 'rgba(0,0,0,0.7)'
+        }} />
+        <div style={{
+          position: 'fixed', zIndex: 1000,
+          left: '50%', top: '50%', transform: 'translate(-50%, -50%)',
+          width: 'calc(100% - 2rem)', maxWidth: '420px',
+          backgroundColor: config.modalBg,
+          borderRadius: '20px',
+          border: '1px solid rgba(255,255,255,0.15)',
+          padding: '1.5rem',
+          backdropFilter: 'blur(8px)',
+          boxShadow: '0 10px 40px rgba(0,0,0,0.6)'
+        }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.75rem' }}>
+            <h2 style={{ color: '#fff', fontSize: '1.75rem', fontWeight: 700, margin: 0, lineHeight: 1.1 }}>
+              {isSignup ? 'Sign up' : 'Sign in'}
+            </h2>
+            <button onClick={closeModal} type="button" style={{
+              background: 'transparent', border: 'none', color: 'rgba(255,255,255,0.6)',
+              fontSize: '1.75rem', fontWeight: 700, cursor: 'pointer', lineHeight: 1, padding: '0 0.25rem'
+            }}>X</button>
+          </div>
+          {modalMessage && (
+            <p style={{ color: 'rgba(255,255,255,0.85)', fontSize: '1.125rem', lineHeight: 1.4, marginBottom: '1rem' }}>
+              {modalMessage}
+            </p>
+          )}
+          <input type="email" placeholder="Email address" value={modalEmail}
+            onChange={(e) => setModalEmail(e.target.value)}
+            onKeyPress={(e) => e.key === 'Enter' && submitModal()}
+            autoComplete="email"
+            style={{
+              width: '100%', padding: '0.75rem 1rem', borderRadius: '12px',
+              backgroundColor: 'rgba(255,255,255,0.1)', border: '1px solid rgba(255,255,255,0.3)',
+              color: '#fff', fontSize: '1.125rem', marginBottom: '0.75rem',
+              boxSizing: 'border-box', outline: 'none'
+            }} />
+          <div style={{ position: 'relative', marginBottom: '0.75rem' }}>
+            <input type={modalShowPwd ? 'text' : 'password'} placeholder="Password"
+              value={modalPassword}
+              onChange={(e) => setModalPassword(e.target.value)}
+              onKeyPress={(e) => e.key === 'Enter' && submitModal()}
+              autoComplete={isSignup ? 'new-password' : 'current-password'}
+              style={{
+                width: '100%', padding: '0.75rem 3rem 0.75rem 1rem', borderRadius: '12px',
+                backgroundColor: 'rgba(255,255,255,0.1)', border: '1px solid rgba(255,255,255,0.3)',
+                color: '#fff', fontSize: '1.125rem', boxSizing: 'border-box', outline: 'none'
+              }} />
+            <button onClick={() => setModalShowPwd(!modalShowPwd)} type="button"
+              style={{
+                position: 'absolute', right: '0.75rem', top: '50%', transform: 'translateY(-50%)',
+                background: 'transparent', border: 'none', color: 'rgba(255,255,255,0.6)',
+                cursor: 'pointer', fontSize: '0.875rem', padding: '0.25rem'
+              }}>{modalShowPwd ? 'hide' : 'show'}</button>
+          </div>
+          {backendWaking && (
+            <p style={{ color: 'rgba(255,255,255,0.6)', fontSize: '1rem', textAlign: 'center', marginBottom: '0.75rem' }}>
+              Waking up the server...
+            </p>
+          )}
+          {modalError && (
+            <p style={{ color: '#f87171', fontSize: '1rem', textAlign: 'center', marginBottom: '0.75rem' }}>
+              {modalError}
+            </p>
+          )}
+          <button onClick={submitModal} disabled={modalLoading} type="button"
+            style={{
+              width: '100%', padding: '1rem', borderRadius: '12px',
+              backgroundColor: config.accentColor, color: '#fff', fontSize: '1.25rem',
+              fontWeight: 700, border: 'none', cursor: 'pointer',
+              opacity: modalLoading ? 0.5 : 1, marginBottom: '0.75rem'
+            }}>
+            {modalLoading ? '...' : (isSignup ? 'Sign up' : 'Sign in')}
+          </button>
+          <p style={{ color: 'rgba(255,255,255,0.7)', fontSize: '1rem', textAlign: 'center', margin: 0 }}>
+            {isSignup ? 'Already have an account? ' : 'New here? '}
+            <button onClick={() => { setModalMode(isSignup ? 'signin' : 'signup'); setModalError(null); }} type="button"
+              style={{
+                background: 'transparent', border: 'none', color: config.accentColor,
+                fontSize: '1rem', fontWeight: 700, cursor: 'pointer', padding: 0,
+                textDecoration: 'underline'
+              }}>
+              {isSignup ? 'Sign in' : 'Sign up'}
+            </button>
+          </p>
+        </div>
+      </>
+    );
+  };
+
+  // -- Empty-state for auth-gated tabs (e.g. Alerts when anon)
+  const EmptyState = ({ message, ctaLabel }) => (
+    <div style={{ padding: '2rem 1rem', textAlign: 'center' }}>
+      <p style={{ color: 'rgba(255,255,255,0.85)', fontSize: '1.25rem', lineHeight: 1.5, marginBottom: '1.25rem' }}>
+        {message}
+      </p>
+      <button onClick={() => openSignup()} type="button"
+        style={{
+          padding: '0.875rem 1.75rem', borderRadius: '12px',
+          backgroundColor: config.accentColor, color: '#fff',
+          fontSize: '1.125rem', fontWeight: 700, border: 'none', cursor: 'pointer'
+        }}>
+        {ctaLabel || 'Sign up'}
+      </button>
+    </div>
+  );
+
+  // -- Counter banner for save-list pages (anon-only display)
+  const CounterBanner = () => {
+    if (isAuthed) return null;
+    const count = list.length;
+    if (count === 0) return null;
+    return (
+      <div style={{
+        padding: '0.625rem 0.875rem', backgroundColor: 'rgba(0,0,0,0.4)',
+        border: '1px solid rgba(255,255,255,0.15)', borderRadius: '12px',
+        marginBottom: '0.75rem', display: 'flex', justifyContent: 'space-between',
+        alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap'
+      }}>
+        <span style={{ color: 'rgba(255,255,255,0.85)', fontSize: '1rem' }}>
+          {count} of {config.freeAnonLimit} saves used
+        </span>
+        <button onClick={() => openSignup()} type="button"
+          style={{
+            padding: '0.4rem 0.9rem', borderRadius: '999px',
+            backgroundColor: config.accentColor, color: '#fff',
+            fontSize: '0.875rem', fontWeight: 700, border: 'none', cursor: 'pointer'
+          }}>
+          Sign up for unlimited
+        </button>
+      </div>
+    );
+  };
+
+  const atLimit = !isAuthed && list.length >= config.freeAnonLimit;
+
+  return {
+    isAuthed: isAuthed,
+    user: user,
+    list: list,
+    listLoading: listLoading,
+    count: list.length,
+    atLimit: atLimit,
+    add: add,
+    remove: remove,
+    refreshList: refreshList,
+    requireAuth: requireAuth,
+    openSignup: openSignup,
+    openSignin: openSignin,
+    signOut: signOut,
+    Modal: Modal,
+    EmptyState: EmptyState,
+    CounterBanner: CounterBanner
+  };
+}
+
+// === END AuthGate v0.2 ======================================================
+
+
+function App() {
+  const gate = useAuthGate(AUTH_GATE_CONFIG);
+  // Compatibility shims -- read-only access for the rest of App().
+  const auth = gate.isAuthed;
+  const user = gate.user;
+  const destinations = gate.list;
+  const [page, setPage] = useState('search');
   const [notifications, setNotifications] = useState([]);
   const [expandedAlertGroups, setExpandedAlertGroups] = useState({});
   const [loading, setLoading] = useState(false);
@@ -251,12 +776,7 @@ function App() {
 
   useEffect(() => {
     fetch(API_BASE + '/health').then(r => r.json()).then(d => setApiVersion(d.version || '?')).catch(() => setApiVersion('?'));
-    const t = localStorage.getItem('tw_token');
-    const u = localStorage.getItem('tw_user');
-    if (t && u) {
-      try { setUser(JSON.parse(u)); setAuth(true); setPage('search'); loadDestinations(); loadNotifications(); }
-      catch(e) { localStorage.removeItem('tw_token'); localStorage.removeItem('tw_user'); }
-    }
+    // Auth hydration + destinations load are owned by useAuthGate now.
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
         setTimeout(() => { document.querySelectorAll('input').forEach(i => i.blur()); }, 100);
@@ -266,14 +786,15 @@ function App() {
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
   }, []);
 
-  const loadDestinations = async () => {
-    try {
-      const token = localStorage.getItem('tw_token');
-      const r = await fetch(API_BASE + '/tw/destinations', { headers: { 'Authorization': 'Bearer ' + token } });
-      if (!r.ok) throw new Error('Failed');
-      setDestinations(await r.json());
-    } catch (e) { console.error(e); }
-  };
+  // Reload notifications when sign-in flips. Anon users have no server alerts.
+  useEffect(() => {
+    if (gate.isAuthed) loadNotifications();
+    else setNotifications([]);
+    // eslint-disable-next-line
+  }, [gate.isAuthed]);
+
+  // Backwards-compat alias -- destinations loading is owned by AuthGate.
+  const loadDestinations = () => gate.refreshList();
 
   const loadNotifications = async () => {
     try {
@@ -290,45 +811,11 @@ function App() {
     try { await fetch(API_BASE + '/tw/notifications/' + notifId, { method: 'DELETE', headers: { 'Authorization': 'Bearer ' + token } }); } catch(e) {}
   };
 
-  const doAuth = async (mode) => {
-    if (!email || !password) return;
-    setLoading(true);
-    setBackendWaking(false);
-    const wakingTimer = setTimeout(() => setBackendWaking(true), 3500);
-    try {
-      const r = await fetch(API_BASE + '/tw/auth/' + mode, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: email, password: password })
-      });
-      clearTimeout(wakingTimer);
-      setBackendWaking(false);
-      if (!r.ok) {
-        const err = await r.json().catch(() => ({}));
-        alert(err.detail || 'Authentication failed');
-        setLoading(false);
-        return;
-      }
-      const data = await r.json();
-      localStorage.setItem('tw_token', data.access_token);
-      const u = { email: email };
-      localStorage.setItem('tw_user', JSON.stringify(u));
-      setUser(u); setAuth(true); setPage('search');
-      await loadDestinations();
-      await loadNotifications();
-    } catch (e) {
-      clearTimeout(wakingTimer);
-      setBackendWaking(false);
-      alert('Network error: ' + e.message);
-    }
-    setLoading(false);
-  };
+  // doAuth removed -- AuthGate owns register/login.
 
   const doLogout = () => {
-    localStorage.removeItem('tw_token');
-    localStorage.removeItem('tw_user');
-    setUser(null); setAuth(false); setDestinations([]); setNotifications([]);
-    setPage('login');
+    gate.signOut();
+    setPage('search');
   };
 
   const doDeleteAccount = async () => {
@@ -378,25 +865,19 @@ function App() {
       return;
     }
     if (!name) name = geoPicked.formatted_address.split(',')[0].trim();
-    var token = localStorage.getItem('tw_token');
     try {
-      var r = await fetch(API_BASE + '/tw/destinations', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
-        body: JSON.stringify({
-          name: name,
-          lat: geoPicked.lat,
-          lng: geoPicked.lng,
-          country: geoPicked.country || null,
-          country_code: geoPicked.country_code || null,
-          formatted_address: geoPicked.formatted_address,
-          radius_mi: radius,
-          alert_level: 'realtime'
-        })
+      const created = await gate.add({
+        name: name,
+        lat: geoPicked.lat,
+        lng: geoPicked.lng,
+        country: geoPicked.country || null,
+        country_code: geoPicked.country_code || null,
+        formatted_address: geoPicked.formatted_address,
+        radius_mi: radius,
+        alert_level: 'realtime'
       });
-      if (!r.ok) {
-        var err = await r.json().catch(function(){ return {}; });
-        setAddDestMsg(err.detail || 'Failed to add place.');
+      if (!created) {
+        // Hit the anon 5-cap -- AuthGate opened the signup modal.
         return;
       }
       setNewDest({ name: '', radius: 50 });
@@ -404,7 +885,6 @@ function App() {
       setGeoCandidates([]);
       setGeoPicked(null);
       setAddDestMsg('Added "' + name + '" to your watchlist.');
-      await loadDestinations();
       setTimeout(function(){ setAddDestMsg(''); setPage('watchlist'); }, 900);
     } catch (e) {
       setAddDestMsg('Network error: ' + e.message);
@@ -421,14 +901,7 @@ function App() {
         headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
         body: JSON.stringify({ in_my_destinations: saved })
       });
-      if (r.ok) {
-        setDestinations(function(prev) {
-          return prev.map(function(d) {
-            if (d.id === id) return Object.assign({}, d, { in_my_destinations: saved });
-            return d;
-          });
-        });
-      }
+      if (r.ok) await gate.refreshList();
     } catch(e) { console.error('save to my destinations failed:', e); }
   };
 
@@ -440,24 +913,13 @@ function App() {
         headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
         body: JSON.stringify({ name: name })
       });
-      if (r.ok) {
-        setDestinations(function(prev) {
-          return prev.map(function(d) {
-            if (d.id === id) return Object.assign({}, d, { name: name });
-            return d;
-          });
-        });
-      }
+      if (r.ok) await gate.refreshList();
     } catch(e) { console.error('rename failed:', e); }
   };
 
   const removeDestination = async (id) => {
-    var token = localStorage.getItem('tw_token');
     try {
-      var r = await fetch(API_BASE + '/tw/destinations/' + id, { method: 'DELETE', headers: { 'Authorization': 'Bearer ' + token } });
-      if (r.ok) {
-        setDestinations(function(prev) { return prev.filter(function(d) { return d.id !== id; }); });
-      }
+      await gate.remove(id);
     } catch(e) { console.error('delete failed:', e); }
   };
 
@@ -632,33 +1094,7 @@ function App() {
 
   // ── Login page ──────────────────────────────────────────────────────────────
 
-  if (page === 'login') {
-    return (
-      <div style={{ minHeight: '100dvh', width: '100%', backgroundColor: POSTER_STYLE.backgroundColor, backgroundImage: 'url(' + TW_LOGIN_BG + ')', backgroundSize: POSTER_STYLE.backgroundSize, backgroundPosition: POSTER_STYLE.backgroundPosition, backgroundRepeat: POSTER_STYLE.backgroundRepeat, backgroundAttachment: POSTER_STYLE.backgroundAttachment, display: 'flex', flexDirection: 'column', alignItems: 'stretch', paddingBottom: '4rem', position: 'relative' }}>
-        <div style={{ position: 'fixed', inset: 0, backdropFilter: 'blur(5px)', WebkitBackdropFilter: 'blur(5px)', backgroundColor: 'rgba(10,10,10,0.40)', zIndex: 0 }} />
-        <div style={{ position: 'relative', zIndex: 10, display: 'flex', flexDirection: 'column', alignItems: 'stretch', flex: '1 1 auto' }}>
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'flex-end', flex: '1 1 auto', minHeight: '50vh', paddingTop: '2rem', paddingBottom: '1.5rem' }}>
-          <h1 className="text-teal-300 font-black text-center tracking-tight" style={{ fontSize: isPhone ? '6rem' : '7rem', textShadow: '0 2px 14px rgba(0,0,0,0.95), 0 0 28px rgba(0,0,0,0.85)', marginTop: '1rem', lineHeight: '1' }}>Travel<br />Watch</h1>
-        </div>
-        <div style={{ paddingLeft: '1.5rem', paddingRight: '1.5rem', paddingBottom: '2rem' }}>
-          <div className="rounded-2xl p-4 shadow-2xl border border-teal-400/50 space-y-3" style={{ backgroundColor: 'rgba(28,20,16,0.85)', backdropFilter: 'blur(8px)' }}>
-            <input id="tw-login-email" type="email" name="tw-login-email" placeholder="Email address" value={email} onChange={(e) => setEmail(e.target.value)} onFocus={(e) => { setTimeout(() => { e.target.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, 350); }} onKeyPress={(e) => e.key === 'Enter' && doAuth('login')} autoComplete="email" autoCorrect="off" autoCapitalize="off" spellCheck="false" className="w-full px-4 py-3 rounded-xl bg-white/15 border border-white/30 text-white placeholder-white/60 focus:outline-none focus:ring-2 focus:ring-teal-400 text-xl" />
-            <div className="relative">
-              <input id="tw-login-password" type={showPassword ? 'text' : 'password'} name="tw-login-password" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} onFocus={(e) => { setTimeout(() => { e.target.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, 350); }} onKeyPress={(e) => e.key === 'Enter' && doAuth('login')} autoComplete="current-password" autoCorrect="off" autoCapitalize="off" spellCheck="false" className="w-full px-4 py-3 rounded-xl bg-white/15 border border-white/30 text-white placeholder-white/60 focus:outline-none focus:ring-2 focus:ring-teal-400 text-xl" />
-              <button onClick={() => setShowPassword(!showPassword)} className="absolute right-3 top-1/2 -translate-y-1/2 text-white/60">{showPassword ? <EyeOffIcon /> : <EyeIcon />}</button>
-            </div>
-            {backendWaking && <p className="text-white/60 text-xl text-center animate-pulse">Waking up the server...</p>}
-            <div className="grid grid-cols-2 gap-3">
-              <button onClick={() => doAuth('login')} disabled={loading} className="py-4 bg-teal-600 hover:bg-teal-700 text-white font-bold rounded-xl disabled:opacity-50 text-2xl">{loading ? '...' : 'Sign In'}</button>
-              <button onClick={() => doAuth('register')} disabled={loading} className="py-4 bg-slate-700/60 hover:bg-slate-800/80 text-white font-bold rounded-xl disabled:opacity-50 text-2xl border border-teal-400/60">{loading ? '...' : 'Register'}</button>
-            </div>
-            <p className="text-white/50 text-base text-center">You'll stay signed in automatically</p>
-          </div>
-        </div>
-        </div>
-      </div>
-    );
-  }
+  // [v0.1.4] Login splash removed. AuthGate handles sign-in/sign-up modally.
 
   // Watchlist = ALL destinations (cron monitors them all, drawer does live recheck)
   // My Destinations = subset with in_my_destinations=true (additional saved-for-reference flag)
@@ -668,6 +1104,7 @@ function App() {
 
   return (
     <PageWrapper bgStyle={page === 'watchlist' || page === 'destinations' || page === 'alerts' ? WOOD_STYLE : POSTER_STYLE}>
+      <gate.Modal />
       <SignalsDrawer />
       {mapEnlarged && drawerData && drawerData.static_map_url && (
         <div onClick={() => setMapEnlarged(false)} style={{ position: 'fixed', inset: 0, zIndex: 200, background: 'rgba(0,0,0,0.92)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem' }}>
@@ -748,6 +1185,7 @@ function App() {
           <div className="space-y-3" style={{ paddingTop: activeDestinations.length > 0 ? '1rem' : PT }}>
             <div className={cardClass}>
               <CardPageHeader title="Watchlist" subtitle="Tap a place to see current alerts" />
+              <gate.CounterBanner />
               {activeDestinations.length === 0 && (
                 <div className="py-6 text-center">
                   <p className="text-gray-100 text-xl leading-relaxed mb-2">No places yet.</p>
@@ -797,6 +1235,7 @@ function App() {
           <div className="space-y-3" style={{ paddingTop: '1rem' }}>
             <div className={cardClass}>
               <CardPageHeader title="My Places" subtitle="Your Places. Tap for latest info." />
+              <gate.CounterBanner />
               {savedDestinations.length === 0 ? (
                 <div className="text-center py-6">
                   <p className="text-gray-100 text-xl leading-relaxed">Saved places appear here for quick reference.</p>
@@ -829,7 +1268,9 @@ function App() {
           <div className="space-y-3" style={{ paddingTop: '1rem' }}>
             <div className={cardClass}>
               <CardPageHeader title="Alerts" subtitle="Latest travel alerts on your places" />
-              {notifications.length === 0 ? (
+              {!gate.isAuthed ? (
+                <gate.EmptyState message="Sign up to get 12-hour alerts when travel advisories, outbreaks, or maritime alerts affect your destinations." ctaLabel="Sign up" />
+              ) : notifications.length === 0 ? (
                 <div className="text-center py-4">
                   <p className="text-white font-bold text-2xl">No alerts yet</p>
                   <p className="text-gray-200 text-xl mt-1">We'll notify you when a travel advisory, outbreak, or maritime alert affects a place on your watchlist.</p>
@@ -952,21 +1393,34 @@ function App() {
               </div>
             </div>
             <div className="px-1 space-y-3 pb-2">
-              <div className="p-3 bg-black/30 rounded-xl"><p className="font-medium text-gray-200 text-xl text-center">{user && user.email}</p></div>
-              <button onClick={doLogout} className="w-full py-4 bg-teal-700 hover:bg-slate-800 text-white rounded-xl text-2xl font-bold">Sign Out</button>
-              <button onClick={() => setShowDangerZone(!showDangerZone)} className="w-full py-3 text-gray-300 text-xl text-center">{showDangerZone ? 'Hide' : 'Account Removal'}</button>
-              {showDangerZone && (
-                <div className="space-y-3">
-                  {!showDeleteConfirm
-                    ? <button onClick={() => setShowDeleteConfirm(true)} className="w-full py-4 bg-slate-900/70 border border-slate-800 text-teal-400 rounded-xl text-xl">Delete Account</button>
-                    : <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-5 space-y-3">
-                        <h3 className="font-bold text-teal-400 text-xl">Are you sure?</h3>
-                        <p className="text-teal-300 text-xl">This will permanently delete your account and all data.</p>
-                        <button onClick={doDeleteAccount} className="w-full py-4 bg-teal-700 text-white rounded-xl font-bold text-xl">Yes, Permanently Delete My Account</button>
-                        <button onClick={() => { setShowDeleteConfirm(false); setShowDangerZone(false); }} className="w-full py-4 bg-slate-800 border border-slate-600 text-gray-100 rounded-xl font-medium text-xl">Cancel</button>
-                      </div>
-                  }
-                </div>
+              {gate.isAuthed ? (
+                <>
+                  <div className="p-3 bg-black/30 rounded-xl"><p className="font-medium text-gray-200 text-xl text-center">{user && user.email}</p></div>
+                  <button onClick={doLogout} className="w-full py-4 bg-teal-700 hover:bg-slate-800 text-white rounded-xl text-2xl font-bold">Sign Out</button>
+                  <button onClick={() => setShowDangerZone(!showDangerZone)} className="w-full py-3 text-gray-300 text-xl text-center">{showDangerZone ? 'Hide' : 'Account Removal'}</button>
+                  {showDangerZone && (
+                    <div className="space-y-3">
+                      {!showDeleteConfirm
+                        ? <button onClick={() => setShowDeleteConfirm(true)} className="w-full py-4 bg-slate-900/70 border border-slate-800 text-teal-400 rounded-xl text-xl">Delete Account</button>
+                        : <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-5 space-y-3">
+                            <h3 className="font-bold text-teal-400 text-xl">Are you sure?</h3>
+                            <p className="text-teal-300 text-xl">This will permanently delete your account and all data.</p>
+                            <button onClick={doDeleteAccount} className="w-full py-4 bg-teal-700 text-white rounded-xl font-bold text-xl">Yes, Permanently Delete My Account</button>
+                            <button onClick={() => { setShowDeleteConfirm(false); setShowDangerZone(false); }} className="w-full py-4 bg-slate-800 border border-slate-600 text-gray-100 rounded-xl font-medium text-xl">Cancel</button>
+                          </div>
+                      }
+                    </div>
+                  )}
+                </>
+              ) : (
+                <>
+                  <div className="p-3 bg-black/30 rounded-xl text-center">
+                    <p className="text-gray-200 text-xl mb-2">Trying it out? You can save up to {AUTH_GATE_CONFIG.freeAnonLimit} destinations without an account.</p>
+                    <p className="text-gray-400 text-lg">Sign up for unlimited saves and 12-hour travel alerts.</p>
+                  </div>
+                  <button onClick={() => gate.openSignup()} className="w-full py-4 bg-teal-700 hover:bg-slate-800 text-white rounded-xl text-2xl font-bold">Sign Up</button>
+                  <button onClick={() => gate.openSignin()} className="w-full py-3 bg-slate-800 border border-slate-600 text-gray-100 rounded-xl text-xl">Already have an account? Sign In</button>
+                </>
               )}
             </div>
             <p className="text-white/30 text-center text-sm pb-4">v{APP_VERSION}</p>
