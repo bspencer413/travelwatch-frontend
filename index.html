@@ -53,7 +53,7 @@ const API_BASE = 'https://cruiseship-watch-backend.onrender.com';
 const TW_BG = 'https://raw.githubusercontent.com/bspencer413/travelwatch-frontend/main/tw-bg.png';
 const TW_LOGIN_BG = 'https://raw.githubusercontent.com/bspencer413/travelwatch-frontend/main/tw-bg.png';
 const BILL_PHOTO = 'https://raw.githubusercontent.com/bspencer413/memorial-watch/main/Bill.jpeg';
-const APP_VERSION = '0.1.4';
+const APP_VERSION = '0.1.5';
 
 // ── TW helpers ────────────────────────────────────────────────────────────────
 
@@ -212,7 +212,7 @@ const PageWrapper = ({ children, bgStyle }) => {
 };
 
 // ============================================================================
-// AuthGate v0.2 — 3Brains portable account + anonymous-storage component
+// AuthGate v0.3.1 — 3Brains portable account + anonymous-storage component
 // ============================================================================
 //
 // PURPOSE
@@ -241,7 +241,7 @@ const PageWrapper = ({ children, bgStyle }) => {
 //         - gate.openSignup() / gate.openSignin() — open the modal manually
 //         - gate.signOut() — clear token + user, list flips to anon
 //   (e) Render once at the root of the App return:
-//         <gate.Modal />
+//         {gate.modal}                  // v0.3.1: JSX, not a component
 //   (f) Render <gate.CounterBanner /> on save-list pages (anon-only display)
 //   (g) Render <gate.EmptyState message="..." /> on auth-gated tabs
 //
@@ -282,7 +282,9 @@ const AUTH_GATE_CONFIG = {
   itemNoun: 'destinations',
   upgradeBenefit: 'unlimited saves and 12-hour travel alerts',
   accentColor: '#14b8a6',
-  modalBg: 'rgba(8,20,30,0.95)'
+  modalBg: 'rgba(8,20,30,0.80)',
+  modalBackdropImage: TW_LOGIN_BG,
+  stayLoggedInDefault: true
 };
 
 // --- HOOK -------------------------------------------------------------------
@@ -301,6 +303,11 @@ function useAuthGate(config) {
   const [modalError, setModalError] = useState(null);
   const [pendingAction, setPendingAction] = useState(null);
   const [backendWaking, setBackendWaking] = useState(false);
+  // v0.3.1: persistence toggle. true = localStorage (survives browser close).
+  // false = sessionStorage (cleared on browser/tab close).
+  const [stayLoggedIn, setStayLoggedIn] = useState(
+    config.stayLoggedInDefault !== false
+  );
 
   // -- localStorage helpers
   const readAnonList = () => {
@@ -315,9 +322,33 @@ function useAuthGate(config) {
   };
   const genAnonId = () => 'anon_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
 
+  // -- v0.3.1 Storage helpers: route between localStorage (persistent) and
+  //    sessionStorage (cleared on browser close), based on stayLoggedIn.
+  const readToken = () => {
+    return localStorage.getItem(config.tokenKey) || sessionStorage.getItem(config.tokenKey);
+  };
+  const readUserRaw = () => {
+    return localStorage.getItem(config.userKey) || sessionStorage.getItem(config.userKey);
+  };
+  const writeAuth = (token, userJson, persistent) => {
+    localStorage.removeItem(config.tokenKey);
+    localStorage.removeItem(config.userKey);
+    sessionStorage.removeItem(config.tokenKey);
+    sessionStorage.removeItem(config.userKey);
+    const store = persistent ? localStorage : sessionStorage;
+    store.setItem(config.tokenKey, token);
+    store.setItem(config.userKey, userJson);
+  };
+  const clearAuth = () => {
+    localStorage.removeItem(config.tokenKey);
+    localStorage.removeItem(config.userKey);
+    sessionStorage.removeItem(config.tokenKey);
+    sessionStorage.removeItem(config.userKey);
+  };
+
   // -- Server fetch helpers
   const serverGet = async () => {
-    const t = localStorage.getItem(config.tokenKey);
+    const t = readToken();
     const r = await fetch(config.apiBase + config.watchlistEndpoint, {
       headers: { 'Authorization': 'Bearer ' + t }
     });
@@ -325,8 +356,8 @@ function useAuthGate(config) {
     return await r.json();
   };
   const serverAdd = async (item) => {
-    // v0.2: pass item shape through unchanged. Host app controls payload.
-    const t = localStorage.getItem(config.tokenKey);
+    // v0.3.1: pass item shape through unchanged. Host app controls payload.
+    const t = readToken();
     const r = await fetch(config.apiBase + config.watchlistEndpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + t },
@@ -336,7 +367,7 @@ function useAuthGate(config) {
     return await r.json();
   };
   const serverRemove = async (id) => {
-    const t = localStorage.getItem(config.tokenKey);
+    const t = readToken();
     const r = await fetch(config.apiBase + config.watchlistEndpoint + '/' + id, {
       method: 'DELETE',
       headers: { 'Authorization': 'Bearer ' + t }
@@ -359,16 +390,13 @@ function useAuthGate(config) {
     }
   };
 
-  // -- Mount: hydrate token + user from localStorage
+  // -- Mount: hydrate token + user from either storage (v0.3.1)
   useEffect(() => {
-    const t = localStorage.getItem(config.tokenKey);
-    const u = localStorage.getItem(config.userKey);
+    const t = readToken();
+    const u = readUserRaw();
     if (t && u) {
       try { setUser(JSON.parse(u)); setIsAuthed(true); }
-      catch (e) {
-        localStorage.removeItem(config.tokenKey);
-        localStorage.removeItem(config.userKey);
-      }
+      catch (e) { clearAuth(); }
     }
   // eslint-disable-next-line
   }, []);
@@ -445,8 +473,7 @@ function useAuthGate(config) {
   };
 
   const signOut = () => {
-    localStorage.removeItem(config.tokenKey);
-    localStorage.removeItem(config.userKey);
+    clearAuth();
     setUser(null);
     setIsAuthed(false);
     // The isAuthed-watching useEffect will reload the list from anon storage
@@ -531,9 +558,8 @@ function useAuthGate(config) {
         throw new Error(errBody.detail || 'Auth failed');
       }
       const data = await r.json();
-      localStorage.setItem(config.tokenKey, data.access_token);
       const u = { email: modalEmail, name: modalEmail.split('@')[0] };
-      localStorage.setItem(config.userKey, JSON.stringify(u));
+      writeAuth(data.access_token, JSON.stringify(u), stayLoggedIn);
       setUser(u);
       setIsAuthed(true);
       // The isAuthed effect handles refreshList + migration
@@ -568,15 +594,23 @@ function useAuthGate(config) {
   };
 
   // -- Modal component
-  const Modal = () => {
-    if (!modalOpen) return null;
-    const isSignup = modalMode === 'signup';
-    return (
+  // v0.3.1: Return modal as JSX (use as {gate.modal}). Defining as a closure-based
+  // component caused remount-on-every-render, dropping keyboard focus on each keystroke.
+  const isSignup = modalMode === 'signup';
+  const modal = !modalOpen ? null : (
       <>
-        <div onClick={closeModal} style={{
-          position: 'fixed', top: 0, right: 0, bottom: 0, left: 0, zIndex: 999,
-          backgroundColor: 'rgba(0,0,0,0.7)'
-        }} />
+        <div onClick={closeModal} style={Object.assign(
+          {
+            position: 'fixed', top: 0, right: 0, bottom: 0, left: 0, zIndex: 999,
+            backgroundColor: 'rgba(0,0,0,0.7)'
+          },
+          config.modalBackdropImage ? {
+            backgroundImage: 'url(' + config.modalBackdropImage + ')',
+            backgroundSize: 'cover',
+            backgroundPosition: 'center',
+            backgroundColor: 'rgba(0,0,0,0.35)'
+          } : {}
+        )} />
         <div style={{
           position: 'fixed', zIndex: 1000,
           left: '50%', top: '50%', transform: 'translate(-50%, -50%)',
@@ -588,7 +622,7 @@ function useAuthGate(config) {
           backdropFilter: 'blur(8px)',
           boxShadow: '0 10px 40px rgba(0,0,0,0.6)'
         }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.75rem' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.5rem' }}>
             <h2 style={{ color: '#fff', fontSize: '1.75rem', fontWeight: 700, margin: 0, lineHeight: 1.1 }}>
               {isSignup ? 'Sign up' : 'Sign in'}
             </h2>
@@ -597,6 +631,12 @@ function useAuthGate(config) {
               fontSize: '1.75rem', fontWeight: 700, cursor: 'pointer', lineHeight: 1, padding: '0 0.25rem'
             }}>X</button>
           </div>
+          {/* v0.3.1: Always-shown value-prop subhead. Tells the user *why*. */}
+          {isSignup && (
+            <p style={{ color: 'rgba(255,255,255,0.80)', fontSize: '1rem', lineHeight: 1.4, marginBottom: '0.75rem' }}>
+              Sign up for {config.upgradeBenefit}.
+            </p>
+          )}
           {modalMessage && (
             <p style={{ color: 'rgba(255,255,255,0.85)', fontSize: '1.125rem', lineHeight: 1.4, marginBottom: '1rem' }}>
               {modalMessage}
@@ -640,6 +680,17 @@ function useAuthGate(config) {
               {modalError}
             </p>
           )}
+          {/* v0.3.1: Stay-signed-in toggle. Default ON. Off = sessionStorage = sign-out on browser close. */}
+          <label style={{
+            display: 'flex', alignItems: 'center', gap: '0.5rem',
+            color: 'rgba(255,255,255,0.85)', fontSize: '1rem',
+            marginBottom: '0.75rem', cursor: 'pointer'
+          }}>
+            <input type="checkbox" checked={stayLoggedIn}
+              onChange={(e) => setStayLoggedIn(e.target.checked)}
+              style={{ width: '1.1rem', height: '1.1rem', cursor: 'pointer' }} />
+            Stay signed in on this device
+          </label>
           <button onClick={submitModal} disabled={modalLoading} type="button"
             style={{
               width: '100%', padding: '1rem', borderRadius: '12px',
@@ -663,7 +714,6 @@ function useAuthGate(config) {
         </div>
       </>
     );
-  };
 
   // -- Empty-state for auth-gated tabs (e.g. Alerts when anon)
   const EmptyState = ({ message, ctaLabel }) => (
@@ -725,13 +775,13 @@ function useAuthGate(config) {
     openSignup: openSignup,
     openSignin: openSignin,
     signOut: signOut,
-    Modal: Modal,
+    modal: modal,                            // v0.3.1: JSX (host renders {gate.modal}). Stable, preserves focus.
     EmptyState: EmptyState,
     CounterBanner: CounterBanner
   };
 }
 
-// === END AuthGate v0.2 ======================================================
+// === END AuthGate v0.3.1 ======================================================
 
 
 function App() {
@@ -1104,7 +1154,7 @@ function App() {
 
   return (
     <PageWrapper bgStyle={page === 'watchlist' || page === 'destinations' || page === 'alerts' ? WOOD_STYLE : POSTER_STYLE}>
-      <gate.Modal />
+      {gate.modal}
       <SignalsDrawer />
       {mapEnlarged && drawerData && drawerData.static_map_url && (
         <div onClick={() => setMapEnlarged(false)} style={{ position: 'fixed', inset: 0, zIndex: 200, background: 'rgba(0,0,0,0.92)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem' }}>
