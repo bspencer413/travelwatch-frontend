@@ -53,7 +53,7 @@ const API_BASE = 'https://cruiseship-watch-backend.onrender.com';
 const TW_BG = 'https://raw.githubusercontent.com/bspencer413/travelwatch-frontend/main/tw-bg.png';
 const TW_LOGIN_BG = 'https://raw.githubusercontent.com/bspencer413/travelwatch-frontend/main/tw-bg.png';
 const BILL_PHOTO = 'https://raw.githubusercontent.com/bspencer413/memorial-watch/main/Bill.jpeg';
-const APP_VERSION = '0.1.5';
+const APP_VERSION = '0.1.6';
 
 // ── TW helpers ────────────────────────────────────────────────────────────────
 
@@ -212,7 +212,7 @@ const PageWrapper = ({ children, bgStyle }) => {
 };
 
 // ============================================================================
-// AuthGate v0.3.1 — 3Brains portable account + anonymous-storage component
+// AuthGate v0.3.3 — 3Brains portable account + anonymous-storage component
 // ============================================================================
 //
 // PURPOSE
@@ -425,7 +425,11 @@ function useAuthGate(config) {
     for (let i = 0; i < anonItems.length; i++) {
       const anonItem = anonItems[i];
       try {
-        const created = await serverAdd({ name: anonItem.name, location: anonItem.location });
+        // v0.3.2: shape-agnostic migration. POST the full anon item minus the
+        // client-only id (backend assigns its own). No field cherry-picking.
+        const payload = Object.assign({}, anonItem);
+        delete payload.id;
+        const created = await serverAdd(payload);
         // Remap snapshot key if it exists under the temp anon ID
         try {
           const oldKey = config.anonSnapshotPrefix + anonItem.id;
@@ -497,15 +501,14 @@ function useAuthGate(config) {
       return null;
     }
     const id = genAnonId();
-    const newItem = {
+    // v0.3.2: shape-agnostic. Safe defaults first, host item on top (host
+    // fields win), then stamp client id + created_at. Preserves whatever
+    // shape the host passes to gate.add. No spread (iOS Safari).
+    const defaults = { status: 'active', is_resolved: false, resolution_outcome: null };
+    const newItem = Object.assign({}, defaults, item, {
       id: id,
-      name: item.name,
-      location: item.location,
-      status: 'active',
-      is_resolved: false,
-      resolution_outcome: null,
       created_at: new Date().toISOString()
-    };
+    });
     const updated = current.concat([newItem]);
     writeAnonList(updated);
     setList(updated);
@@ -573,6 +576,15 @@ function useAuthGate(config) {
       // Replay pending action after isAuthed has propagated. We re-do the
       // add through serverAdd directly (not gate.add) because the closure
       // captured the old isAuthed=false.
+      // v0.3.3: after the replay, tell the host so it can move the user off the
+      // stale search view onto their saved list. Without this, the item that
+      // hit the cap is left on screen and re-tapping Save says "already saved".
+      const notifyHost = () => {
+        if (typeof config.onAuthSuccess === 'function') {
+          try { config.onAuthSuccess({ hadPendingAdd: !!(pa && pa.type === 'add') }); }
+          catch (e) {}
+        }
+      };
       if (pa) {
         setTimeout(async () => {
           try {
@@ -583,7 +595,10 @@ function useAuthGate(config) {
               await refreshList();
             }
           } catch (e) { console.error('AuthGate: replay pending action failed', e); }
+          notifyHost();
         }, 100);
+      } else {
+        notifyHost();
       }
     } catch (e) {
       clearTimeout(wakeTimer); setBackendWaking(false);
@@ -771,6 +786,7 @@ function useAuthGate(config) {
     add: add,
     remove: remove,
     refreshList: refreshList,
+    getToken: readToken,               // v0.3.2: host token reads route here (dual-storage safe)
     requireAuth: requireAuth,
     openSignup: openSignup,
     openSignin: openSignin,
@@ -781,11 +797,16 @@ function useAuthGate(config) {
   };
 }
 
-// === END AuthGate v0.3.1 ======================================================
+// === END AuthGate v0.3.3 ======================================================
 
 
 function App() {
-  const gate = useAuthGate(AUTH_GATE_CONFIG);
+  const gate = useAuthGate(Object.assign({}, AUTH_GATE_CONFIG, {
+    // v0.3.3: after a capped-save signup, land the user on their watchlist.
+    onAuthSuccess: function (ctx) {
+      if (ctx && ctx.hadPendingAdd) { setPage('watchlist'); }
+    }
+  }));
   // Compatibility shims -- read-only access for the rest of App().
   const auth = gate.isAuthed;
   const user = gate.user;
@@ -848,7 +869,7 @@ function App() {
 
   const loadNotifications = async () => {
     try {
-      const token = localStorage.getItem('tw_token');
+      const token = gate.getToken();
       const r = await fetch(API_BASE + '/tw/notifications', { headers: { 'Authorization': 'Bearer ' + token } });
       if (!r.ok) throw new Error('Failed');
       setNotifications(await r.json());
@@ -856,7 +877,7 @@ function App() {
   };
 
   const dismissAlert = async (notifId) => {
-    const token = localStorage.getItem('tw_token');
+    const token = gate.getToken();
     setNotifications(prev => prev.filter(n => n.id !== notifId));
     try { await fetch(API_BASE + '/tw/notifications/' + notifId, { method: 'DELETE', headers: { 'Authorization': 'Bearer ' + token } }); } catch(e) {}
   };
@@ -869,7 +890,7 @@ function App() {
   };
 
   const doDeleteAccount = async () => {
-    const token = localStorage.getItem('tw_token');
+    const token = gate.getToken();
     try {
       await fetch(API_BASE + '/tw/account', { method: 'DELETE', headers: { 'Authorization': 'Bearer ' + token } });
     } catch(e) {}
@@ -884,7 +905,7 @@ function App() {
     if (q.length < 2) { setGeoMsg('Type a city, country, or landmark.'); return; }
     setGeoSearching(true);
     try {
-      var token = localStorage.getItem('tw_token');
+      var token = gate.getToken();
       var r = await fetch(API_BASE + '/tw/geocode', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
@@ -944,7 +965,7 @@ function App() {
   const setDestInMyDestinations = async (id, saved) => {
     // Toggles in_my_destinations flag. Never removes from Watchlist —
     // Watchlist contains ALL destinations and is the live monitor.
-    var token = localStorage.getItem('tw_token');
+    var token = gate.getToken();
     try {
       var r = await fetch(API_BASE + '/tw/destinations/' + id, {
         method: 'PATCH',
@@ -956,7 +977,7 @@ function App() {
   };
 
   const renameDestination = async (id, name) => {
-    var token = localStorage.getItem('tw_token');
+    var token = gate.getToken();
     try {
       var r = await fetch(API_BASE + '/tw/destinations/' + id, {
         method: 'PATCH',
@@ -976,7 +997,7 @@ function App() {
   const openDestinationDrawer = async (dest) => {
     setDrawerData({ destination: dest, advisory: null, outbreaks: [], marine: [] });
     setDrawerLoading(true);
-    const token = localStorage.getItem('tw_token');
+    const token = gate.getToken();
     try {
       const r = await fetch(API_BASE + '/tw/destinations/' + dest.id + '/signals', { headers: { 'Authorization': 'Bearer ' + token } });
       if (r.ok) {
