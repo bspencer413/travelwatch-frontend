@@ -53,7 +53,7 @@ const API_BASE = 'https://cruiseship-watch-backend.onrender.com';
 const TW_BG = 'https://raw.githubusercontent.com/bspencer413/travelwatch-frontend/main/tw-bg.png';
 const TW_LOGIN_BG = 'https://raw.githubusercontent.com/bspencer413/travelwatch-frontend/main/tw-bg.png';
 const BILL_PHOTO = 'https://raw.githubusercontent.com/bspencer413/memorial-watch/main/Bill.jpeg';
-const APP_VERSION = '0.1.6';
+const APP_VERSION = '0.1.7';
 
 // ── TW helpers ────────────────────────────────────────────────────────────────
 
@@ -212,7 +212,7 @@ const PageWrapper = ({ children, bgStyle }) => {
 };
 
 // ============================================================================
-// AuthGate v0.3.3 — 3Brains portable account + anonymous-storage component
+// AuthGate v0.3.4 — 3Brains portable account + anonymous-storage component
 // ============================================================================
 //
 // PURPOSE
@@ -277,6 +277,14 @@ const AUTH_GATE_CONFIG = {
   loginEndpoint: '/tw/auth/login',
   registerEndpoint: '/tw/auth/register',
   freeAnonLimit: 5,
+  promoteField: 'in_my_destinations',
+  serverPromote: function(id, saved, token) {
+    return fetch(API_BASE + '/tw/destinations/' + id, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+      body: JSON.stringify({ in_my_destinations: saved })
+    });
+  },
   appName: 'Travel Watch',
   saveActionLabel: 'save this destination',
   itemNoun: 'destinations',
@@ -430,6 +438,12 @@ function useAuthGate(config) {
         const payload = Object.assign({}, anonItem);
         delete payload.id;
         const created = await serverAdd(payload);
+        try {
+          if (config.promoteField && anonItem[config.promoteField]
+              && typeof config.serverPromote === 'function') {
+            await config.serverPromote(created.id, true, readToken());
+          }
+        } catch (e) {}
         // Remap snapshot key if it exists under the temp anon ID
         try {
           const oldKey = config.anonSnapshotPrefix + anonItem.id;
@@ -536,6 +550,27 @@ function useAuthGate(config) {
     setPendingAction({ type: 'callback', fn: callback });
     openSignup('Sign up to ' + config.saveActionLabel + '.');
     return false;
+  };
+
+  const promote = async (id, saved) => {
+    const val = (saved === undefined) ? true : saved;
+    if (isAuthed) {
+      if (typeof config.serverPromote === 'function') {
+        const r = await config.serverPromote(id, val, readToken());
+        if (r && r.ok) await refreshList();
+      }
+      return;
+    }
+    if (!config.promoteField) return;
+    const current = readAnonList();
+    const updated = current.map(function(it) {
+      if (it.id !== id) return it;
+      const c = Object.assign({}, it);
+      c[config.promoteField] = val;
+      return c;
+    });
+    writeAnonList(updated);
+    setList(updated);
   };
 
   // -- Modal submit (calls login or register against backend)
@@ -787,6 +822,7 @@ function useAuthGate(config) {
     remove: remove,
     refreshList: refreshList,
     getToken: readToken,               // v0.3.2: host token reads route here (dual-storage safe)
+    promote: promote,
     requireAuth: requireAuth,
     openSignup: openSignup,
     openSignin: openSignin,
@@ -797,7 +833,7 @@ function useAuthGate(config) {
   };
 }
 
-// === END AuthGate v0.3.3 ======================================================
+// === END AuthGate v0.3.4 ======================================================
 
 
 function App() {
@@ -963,17 +999,8 @@ function App() {
   };
 
   const setDestInMyDestinations = async (id, saved) => {
-    // Toggles in_my_destinations flag. Never removes from Watchlist —
-    // Watchlist contains ALL destinations and is the live monitor.
-    var token = gate.getToken();
-    try {
-      var r = await fetch(API_BASE + '/tw/destinations/' + id, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
-        body: JSON.stringify({ in_my_destinations: saved })
-      });
-      if (r.ok) await gate.refreshList();
-    } catch(e) { console.error('save to my destinations failed:', e); }
+    // v0.3.4: delegate to the gate (anon-local + server, migration-aware).
+    await gate.promote(id, saved);
   };
 
   const renameDestination = async (id, name) => {
